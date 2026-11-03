@@ -189,6 +189,13 @@ files come from where.
 
 Weather data by [Open-Meteo.com](https://open-meteo.com) (CC BY 4.0).
 
+## How this project was made
+
+The code was written with **[Claude](https://claude.ai)**, Anthropic's AI assistant, using Claude Code. Claude
+translated Gadgetbridge's Huawei protocol from Java to Python and wrote the Sailfish OS app, the tests and this
+documentation. Pairing problems were debugged live over SSH on a real phone and watch. The result was then tested
+on that hardware. Please review the code with that in mind, and report anything that looks wrong.
+
 ## License
 
 [AGPL-3.0-or-later](LICENSE), the same licence as Gadgetbridge. If you distribute a modified version, you must
