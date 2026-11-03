@@ -73,7 +73,7 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 
 %files
 %defattr(-,root,root,-)
-%license LICENSE
+%license LICENSE NOTICE.md
 %{_bindir}/harbour-watchbridge-daemon
 %{_datadir}/%{name}
 %{_datadir}/applications/%{name}.desktop

@@ -180,13 +180,19 @@ Honor watches that use the PAKE/STS handshake are not supported.
 
 ## Credits
 
-- [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge) and its Huawei contributors (Damien Gaignon,
-  Martin.JM and many others): all of the protocol knowledge in `daemon/watchbridge/huawei/` comes from their work.
-- Weather data by [Open-Meteo](https://open-meteo.com) (CC BY 4.0).
+This app would not exist without **[Gadgetbridge](https://gadgetbridge.org)**. Its Huawei developers,
+among them Damien Gaignon, Martin.JM, José Rebelo and Vitalii Tomin, reverse-engineered the watch protocol
+over years of careful work: the framing, the encryption, HiChain pairing, and every notification and weather
+packet. All of the protocol code in `daemon/watchbridge/huawei/` is a Python translation of their Java code.
+If WatchBridge is useful to you, please consider supporting Gadgetbridge. See [NOTICE.md](NOTICE.md) for which
+files come from where.
+
+Weather data by [Open-Meteo.com](https://open-meteo.com) (CC BY 4.0).
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE).
+[AGPL-3.0-or-later](LICENSE), the same licence as Gadgetbridge. If you distribute a modified version, you must
+publish its source code under the same licence.
 
-Huawei and Watch GT are trademarks of Huawei Technologies Co., Ltd. This project is not affiliated with or
-endorsed by Huawei.
+WatchBridge is an independent project and is not affiliated with or endorsed by Gadgetbridge, Huawei or Jolla.
+Huawei and Watch GT are trademarks of Huawei Technologies Co., Ltd., and Sailfish OS is a trademark of Jolla Ltd.
