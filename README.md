@@ -20,7 +20,7 @@ The watch protocol is a Python port of the Huawei support in
 
 | | |
 |---|---|
-| Tested with | Huawei Watch GT 5 (VLI-B19, firmware 6.0.0.23) on a Sony Xperia with Sailfish OS 5.2.0.22 (aarch64) |
+| Tested with | Huawei Watch GT 5 (VLI-B19, firmware 6.0.0.23) on a Sony Xperia 10 III with Sailfish OS 5.2.0.22 (aarch64) |
 | Verified on that watch | Pairing, HiChain authentication, encrypted connection, automatic reconnect, battery level |
 | Implemented, verified against a simulated watch | Notifications, weather, find my phone, time sync |
 
