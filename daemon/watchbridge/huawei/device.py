@@ -3,8 +3,9 @@
 #
 # Connection/initialisation logic ported from Gadgetbridge
 # (HuaweiSupportProvider.java, AsynchronousResponse.java, HuaweiWeatherManager.java
-# and the request classes), Copyright (C) 2024 Damien Gaignon, Martin.JM and
-# Gadgetbridge contributors.
+# and the request classes), Copyright (C) 2024 Damien Gaignon, Martin.JM,
+# Vitalii Tomin. Translated to Python and modified for WatchBridge, 2026.
+# See NOTICE.md.
 """Talks to a Huawei watch over an established byte stream (RFCOMM socket)."""
 
 import logging

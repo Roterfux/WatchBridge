@@ -97,7 +97,7 @@ class Service(dbus.service.Object):
         self._pairing = False
         self._bluez = Bluez(system_bus, on_devices=self._devices_changed, on_connection=self._on_rfcomm,
                             on_device_connected=self._bt_device_connected)
-        self._notifications = NotificationMonitor(self._on_notification)
+        self._notifications = NotificationMonitor(self._on_notification, on_app_seen=self._on_app_seen)
         self._apply_notification_settings()
         self._notifications.start()
         self._schedule_weather()
@@ -396,8 +396,16 @@ class Service(dbus.service.Object):
     # ========================================================== notifications
     def _apply_notification_settings(self):
         n = self.config.data["notifications"]
+        self._notifications.mode = n.get("mode", "all")
         self._notifications.blocked_apps = set(n.get("blocked_apps", []))
+        self._notifications.allowed_apps = set(n.get("allowed_apps", []))
         self._notifications.include_system = bool(n.get("include_system", False))
+
+    def _on_app_seen(self, app_name, package):
+        try:
+            self.config.remember_app(app_name, package, time.time())
+        except OSError as e:
+            log.warning("Could not save the list of seen apps: %s", e)
 
     def _on_notification(self, n):
         if not self.config.data["notifications"]["enabled"] or not self._ready():

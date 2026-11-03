@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Ported from Gadgetbridge (HuaweiCrypto.java, CryptoUtils.java),
-# Copyright (C) 2024 Damien Gaignon, Martin.JM and Gadgetbridge contributors.
+# Copyright (C) 2021-2024 Andreas Shimokawa, Damien Gaignon, José Rebelo, Martin.JM.
+# Translated to Python and modified for WatchBridge, 2026. See NOTICE.md.
 """Huawei link-layer cryptography helpers."""
 
 import hashlib

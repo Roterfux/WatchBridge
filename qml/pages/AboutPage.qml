@@ -41,8 +41,8 @@ Page {
                 onLinkActivated: Qt.openUrlExternally(link)
                 font.pixelSize: Theme.fontSizeSmall
                 text: qsTr("The watch protocol implementation is a port of the Huawei support in " +
-                           "<a href=\"https://gadgetbridge.org\">Gadgetbridge</a>, by Damien Gaignon, Martin.JM " +
-                           "and the Gadgetbridge contributors. Weather data by " +
+                           "<a href=\"https://gadgetbridge.org\">Gadgetbridge</a>, by Damien Gaignon, Martin.JM, " +
+                           "José Rebelo, Vitalii Tomin and the Gadgetbridge contributors. Thank you! Weather data by " +
                            "<a href=\"https://open-meteo.com\">Open-Meteo.com</a> (CC BY 4.0).")
             }
             Label {
@@ -52,7 +52,8 @@ Page {
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.secondaryColor
                 text: qsTr("Licensed under the GNU Affero General Public License v3 or later. " +
-                           "Huawei and Watch GT are trademarks of their owner; this project is not affiliated with them.")
+                           "WatchBridge is an independent project, not affiliated with Gadgetbridge, Huawei or Jolla. " +
+                           "Huawei and Watch GT are trademarks of Huawei Technologies.")
             }
         }
     }

@@ -23,8 +23,13 @@ DEFAULTS = {
     "auto_reconnect": True,
     "notifications": {
         "enabled": True,
+        "mode": "all",          # "all" (minus blocked_apps) or "selected" (only allowed_apps)
         "blocked_apps": [],
+        "allowed_apps": [],
         "include_system": False,
+        # Apps that sent notifications recently, offered in the app lists:
+        # {app_name: {"package": str, "last": unix time}}. Maintained by the daemon.
+        "seen_apps": {},
     },
     "weather": {
         "enabled": True,
@@ -42,6 +47,9 @@ DEFAULTS = {
 
 # Keys the UI may not read or change
 _PRIVATE_DEVICE_KEYS = ("android_id", "fake_mac", "auth_key")
+
+MAX_SEEN_APPS = 60
+_SEEN_REFRESH = 6 * 3600  # rewrite the file for a known app at most this often
 
 
 def _config_dir():
@@ -95,8 +103,24 @@ class Config:
             # The UI may rename the watch, everything else is daemon managed
             if "name" in dev:
                 self.data["device"]["name"] = str(dev["name"])
+        notif = changes.get("notifications")
+        if isinstance(notif, dict):
+            notif.pop("seen_apps", None)  # daemon managed
         _merge(self.data, {k: v for k, v in changes.items() if k in DEFAULTS})
         self.save()
+
+    def remember_app(self, app_name, package, now):
+        """Record an app that sent a notification. Returns True if the list changed."""
+        seen = self.data["notifications"].setdefault("seen_apps", {})
+        entry = seen.get(app_name)
+        if entry and entry.get("package") == package and now - entry.get("last", 0) < _SEEN_REFRESH:
+            return False
+        seen[app_name] = {"package": package, "last": int(now)}
+        if len(seen) > MAX_SEEN_APPS:
+            for name in sorted(seen, key=lambda k: seen[k].get("last", 0))[:len(seen) - MAX_SEEN_APPS]:
+                del seen[name]
+        self.save()
+        return True
 
     def forget_device(self):
         self.data["device"] = copy.deepcopy(DEFAULTS["device"])

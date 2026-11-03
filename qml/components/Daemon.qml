@@ -34,6 +34,9 @@ Item {
         _call("GetStatus", [], function(json) { status = JSON.parse(json) })
         _call("GetSettings", [], function(json) { settings = JSON.parse(json) })
     }
+    function reloadSettings(cb) {
+        _call("GetSettings", [], function(json) { settings = JSON.parse(json); if (cb) cb() })
+    }
     function refreshDevices() { _call("GetDevices", [], function(json) { devices = JSON.parse(json) }) }
 
     function startScan() { _call("StartScan"); refreshDevices() }

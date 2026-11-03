@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Ported from Gadgetbridge (packets/DeviceConfig.java, Notifications.java,
-# Weather.java, LocaleConfig.java, FindPhone.java), Copyright (C) 2024
-# Damien Gaignon, Martin.JM and Gadgetbridge contributors.
+# Weather.java, LocaleConfig.java, FindPhone.java, AccountRelated.java),
+# Copyright (C) 2024 Damien Gaignon, José Rebelo, Martin.JM, Vitalii Tomin.
+# Translated to Python and modified for WatchBridge, 2026. See NOTICE.md.
 """Builders and parsers for the Huawei services used by WatchBridge."""
 
 import os

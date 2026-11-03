@@ -13,6 +13,14 @@ Page {
 
     readonly property var intervals: [15, 30, 60, 120, 180]
 
+    // Fetch the latest seen-apps list before showing the picker
+    function openAppList(key, title, description) {
+        daemon.reloadSettings(function() {
+            pageStack.push(Qt.resolvedUrl("AppListDialog.qml"),
+                           { daemon: daemon, settingsKey: key, title: title, description: description })
+        })
+    }
+
     SilicaFlickable {
         anchors.fill: parent
         contentHeight: column.height + Theme.paddingLarge
@@ -48,10 +56,34 @@ Page {
                 automaticCheck: false
                 onClicked: daemon.updateSettings({ "notifications": { "include_system": !checked } })
             }
+            ComboBox {
+                label: qsTr("Forward from")
+                currentIndex: n.mode === "selected" ? 1 : 0
+                menu: ContextMenu {
+                    MenuItem { text: qsTr("All apps") }
+                    MenuItem { text: qsTr("Selected apps only") }
+                }
+                onCurrentIndexChanged: {
+                    if (!page.s.notifications) return
+                    var mode = currentIndex === 1 ? "selected" : "all"
+                    if (mode !== (n.mode || "all"))
+                        daemon.updateSettings({ "notifications": { "mode": mode } })
+                }
+            }
             ValueButton {
+                visible: n.mode !== "selected"
                 label: qsTr("Muted apps")
                 value: (n.blocked_apps || []).length === 0 ? qsTr("None") : (n.blocked_apps || []).join(", ")
-                onClicked: pageStack.push(blockedDialog)
+                onClicked: page.openAppList("blocked_apps", qsTr("Muted apps"),
+                    qsTr("Notifications from these apps are not sent to the watch."))
+            }
+            ValueButton {
+                visible: n.mode === "selected"
+                label: qsTr("Allowed apps")
+                value: (n.allowed_apps || []).length === 0 ? qsTr("None, nothing is forwarded")
+                                                           : (n.allowed_apps || []).join(", ")
+                onClicked: page.openAppList("allowed_apps", qsTr("Allowed apps"),
+                    qsTr("Only notifications from these apps are sent to the watch."))
             }
 
             SectionHeader { text: qsTr("Weather") }
@@ -157,70 +189,4 @@ Page {
     }
 
     RemorsePopup { id: remorse }
-
-    Component {
-        id: blockedDialog
-        Dialog {
-            id: dlg
-            property var apps: (page.n.blocked_apps || []).slice(0)
-
-            onAccepted: daemon.updateSettings({ "notifications": { "blocked_apps": apps } })
-
-            SilicaListView {
-                id: blockedList
-                anchors.fill: parent
-                model: dlg.apps
-                header: Column {
-                    width: blockedList.width
-                    DialogHeader { acceptText: qsTr("Save") }
-                    Label {
-                        x: Theme.horizontalPageMargin
-                        width: parent.width - 2 * x
-                        wrapMode: Text.Wrap
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.secondaryHighlightColor
-                        text: qsTr("Notifications from these apps are not sent to the watch. Use the app name shown in the notification, or an Android package name.")
-                    }
-                    TextField {
-                        id: entry
-                        width: parent.width
-                        label: qsTr("App name")
-                        placeholderText: qsTr("Add app, e.g. Email")
-                        EnterKey.iconSource: "image://theme/icon-m-add"
-                        EnterKey.onClicked: {
-                            var v = text.trim()
-                            if (v && dlg.apps.indexOf(v) < 0) {
-                                var copy = dlg.apps.slice(0)
-                                copy.push(v)
-                                dlg.apps = copy
-                            }
-                            text = ""
-                        }
-                    }
-                    Item {
-                        width: parent.width
-                        height: Theme.paddingMedium
-                    }
-                }
-                delegate: ListItem {
-                    menu: ContextMenu {
-                        MenuItem {
-                            text: qsTr("Remove")
-                            onClicked: {
-                                var copy = dlg.apps.slice(0)
-                                copy.splice(index, 1)
-                                dlg.apps = copy
-                            }
-                        }
-                    }
-                    Label {
-                        x: Theme.horizontalPageMargin
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData
-                    }
-                }
-                VerticalScrollDecorator {}
-            }
-        }
-    }
 }

@@ -78,11 +78,20 @@ def _text(hints, key, fallback):
     return str(v) if v else fallback
 
 
+MODE_ALL = "all"            # everything except blocked_apps
+MODE_SELECTED = "selected"  # only allowed_apps
+
+
 class NotificationMonitor:
-    def __init__(self, on_notification, own_app_name="WatchBridge"):
+    def __init__(self, on_notification, own_app_name="WatchBridge", on_app_seen=None):
         self.on_notification = on_notification
+        # Called with (app_name, package) for every app that sends a notification,
+        # filtered or not, so the settings can offer it in the app lists
+        self.on_app_seen = on_app_seen or (lambda app_name, package: None)
         self.own_app_name = own_app_name
+        self.mode = MODE_ALL
         self.blocked_apps = set()
+        self.allowed_apps = set()
         self.include_system = False
         self._recent = {}
         self._bus = None
@@ -114,6 +123,8 @@ class NotificationMonitor:
             hints = dict(hints)
             n = Notification(str(app_name), _text(hints, "x-nemo-preview-summary", str(summary)),
                              _text(hints, "x-nemo-preview-body", str(body)), hints, int(replaces_id))
+            if n.app_name and n.app_name != self.own_app_name:
+                self.on_app_seen(n.app_name, n.package)
             accepted = self._accept(n)
             log.debug("Notification from %r (%s): %s", n.app_name, n.category, "forward" if accepted else "skip")
             if accepted:
@@ -126,7 +137,10 @@ class NotificationMonitor:
             return False
         if n.app_name == self.own_app_name:
             return False
-        if n.app_name in self.blocked_apps or n.package in self.blocked_apps:
+        if self.mode == MODE_SELECTED:
+            if n.app_name not in self.allowed_apps and n.package not in self.allowed_apps:
+                return False
+        elif n.app_name in self.blocked_apps or n.package in self.blocked_apps:
             return False
         if not self.include_system:
             if n.category.startswith(_SYSTEM_CATEGORY_PREFIXES):

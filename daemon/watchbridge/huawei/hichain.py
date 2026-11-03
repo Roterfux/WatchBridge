@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Ported from Gadgetbridge (GetHiChainRequest.java, DeviceConfig.HiChain),
-# Copyright (C) 2024 Damien Gaignon, Martin.JM and Gadgetbridge contributors.
+# Copyright (C) 2024 Damien Gaignon, José Rebelo, Martin.JM.
+# Translated to Python and modified for WatchBridge, 2026. See NOTICE.md.
 """HiChain ISO authentication used by HarmonyOS watches such as the Watch GT 5.
 
 Operation 1 ("auth") runs on the very first connection: a PSK derived from the

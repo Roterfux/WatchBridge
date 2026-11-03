@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Ported from Gadgetbridge (HuaweiTLV.java), Copyright (C) 2024 Damien Gaignon,
-# Martin.JM and Gadgetbridge contributors.
+# Martin.JM, Vitalii Tomin.
+# Translated to Python and modified for WatchBridge, 2026. See NOTICE.md.
 """Huawei tag/length/value container with 7-bit big-endian varint lengths."""
 
 import struct

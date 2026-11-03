@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Ported from Gadgetbridge (HuaweiPacket.java, CheckSums.java), Copyright (C)
-# 2024 Damien Gaignon, Martin.JM and Gadgetbridge contributors.
+# 2015-2025 Andreas Shimokawa, Carsten Pfeiffer, Damien Gaignon, Daniele Gobbetti,
+# José Rebelo, Martin.JM, Petr Vaněk, vappster.
+# Translated to Python and modified for WatchBridge, 2026. See NOTICE.md.
 """Huawei link framing: 0x5A magic, length, slicing, CRC16 and TLV encryption."""
 
 import logging
