@@ -10,7 +10,8 @@ The watch protocol is a Python port of the Huawei support in
 
 - **Pairing:** Bluetooth bonding plus Huawei's HiChain handshake, with a step-by-step pairing screen
 - **Notification sync:** phone notifications (native apps and Android App Support apps) are forwarded to the
-  watch. You can mute individual apps and choose whether system messages are included.
+  watch. Forward everything except muted apps, or only the apps you select. Apps are picked from a list of
+  apps that recently sent notifications. You can also choose whether system messages are included.
 - **Weather:** current conditions, a 24-hour hourly forecast and an 8-day forecast from
   [Open-Meteo](https://open-meteo.com) (no API key needed). Pushed on a schedule and whenever the watch asks.
 - **Extras:** time and time-zone sync, battery level, "find my phone" (the watch makes the phone ring),
@@ -20,7 +21,7 @@ The watch protocol is a Python port of the Huawei support in
 
 | | |
 |---|---|
-| Tested with | Huawei Watch GT 5 (VLI-B19, firmware 6.0.0.23) on a Sony Xperia 10 III with Sailfish OS 5.2.0.22 (aarch64) |
+| Tested with | Huawei Watch GT 5 (VLI-B19, firmware 6.0.0.23) on a Sony Xperia with Sailfish OS 5.2.0.22 (aarch64) |
 | Verified on that watch | Pairing, HiChain authentication, encrypted connection, automatic reconnect, battery level |
 | Implemented, verified against a simulated watch | Notifications, weather, find my phone, time sync |
 
@@ -65,7 +66,9 @@ step 1, because the watch usually discards its half-finished pairing.
 ## Settings
 
 - **Connection:** reconnect automatically
-- **Notifications:** forward notifications, include system notifications, muted apps
+- **Notifications:** forward notifications; include system notifications; forward from all apps (minus muted
+  apps) or from selected apps only. The app lists show every app that sent a notification recently, even
+  filtered ones, and you can type in apps that haven't sent one yet.
 - **Weather:** on/off, location, units (°C / °F), update interval
 - **Watch display:** 24-hour clock, date format
 - **Forget watch:** removes the pairing keys and the Bluetooth bond

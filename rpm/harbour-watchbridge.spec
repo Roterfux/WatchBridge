@@ -3,7 +3,7 @@
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
 Version:    0.1.0
-Release:    5
+Release:    6
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -83,6 +83,10 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Tue Nov 03 2026 WatchBridge contributors - 0.1.0-6
+- Notifications: "selected apps only" mode (allow-list) next to the existing muted apps
+- Remember apps that sent notifications and offer them as switches in the app lists
+
 * Tue Nov 03 2026 WatchBridge contributors - 0.1.0-5
 - First version tested on a real Watch GT 5 (firmware 6.0.0.23) with Sailfish OS 5.2
 - Accept the NUL-terminated HiChain JSON sent by the watch
