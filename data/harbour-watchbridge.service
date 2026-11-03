@@ -1,0 +1,13 @@
+[Unit]
+Description=WatchBridge - Huawei Watch GT 5 companion daemon
+After=pre-user-session.target lipstick.service
+
+[Service]
+Type=dbus
+BusName=harbour.watchbridge
+ExecStart=/usr/bin/harbour-watchbridge-daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=post-user-session.target

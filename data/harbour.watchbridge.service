@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=harbour.watchbridge
+Exec=/usr/bin/harbour-watchbridge-daemon
+SystemdService=harbour-watchbridge.service

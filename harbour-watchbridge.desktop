@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=WatchBridge
+Comment=Companion for the Huawei Watch GT 5
+Icon=harbour-watchbridge
+Exec=sailfish-qml harbour-watchbridge
+X-Nemo-Application-Type=silica-qt5
+
+[X-Sailjail]
+OrganizationName=harbour
+ApplicationName=watchbridge
+# The UI talks to the WatchBridge daemon over the session bus and uses GPS for
+# the weather location; sandboxing would block both, so it is disabled.
+Sandboxing=Disabled

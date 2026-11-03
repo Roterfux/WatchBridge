@@ -1,0 +1,4 @@
+#!/bin/sh
+# WatchBridge daemon launcher. Pass -v for protocol-level debug logging.
+export PYTHONPATH=/usr/share/harbour-watchbridge/daemon${PYTHONPATH:+:$PYTHONPATH}
+exec /usr/bin/python3 -m watchbridge "$@"
