@@ -10,6 +10,22 @@ Page {
     readonly property var status: daemon.status
     readonly property var info: status.info || {}
     readonly property var wx: daemon.weather
+    readonly property var hs: status.health || {}
+    readonly property int healthLastSync: hs.lastSync || 0
+    property int todaySteps: -1
+
+    function loadTodaySteps() {
+        if (!daemon.available) return
+        daemon.getHealth(Qt.formatDate(new Date(), "yyyy-MM-dd"), function(r) {
+            page.todaySteps = r.available && (r.minutes > 0 || r.totalsUpdated) ? r.steps : -1
+        })
+    }
+    onHealthLastSyncChanged: loadTodaySteps()
+    Component.onCompleted: loadTodaySteps()
+    Connections {
+        target: daemon
+        onAvailableChanged: page.loadTodaySteps()
+    }
 
     function ago(ts) {
         if (!ts) return ""
@@ -148,6 +164,42 @@ Page {
                         if (daemon.connected) daemon.disconnectWatch()
                         daemon.connectWatch()
                     }
+                }
+            }
+
+            // ----------------------------------------------------------- health
+            SectionHeader { text: qsTr("Health"); visible: daemon.paired }
+
+            BackgroundItem {
+                visible: daemon.paired
+                height: healthCol.height + 2 * Theme.paddingMedium
+                onClicked: pageStack.push(Qt.resolvedUrl("HealthPage.qml"), { daemon: daemon })
+                Column {
+                    id: healthCol
+                    x: Theme.horizontalPageMargin
+                    width: parent.width - 2 * x - healthArrow.width
+                    anchors.verticalCenter: parent.verticalCenter
+                    Label {
+                        width: parent.width
+                        truncationMode: TruncationMode.Fade
+                        text: page.todaySteps >= 0 ? qsTr("%1 steps today").arg(page.todaySteps)
+                                                   : qsTr("Steps, heart rate and sleep")
+                    }
+                    Label {
+                        width: parent.width
+                        truncationMode: TruncationMode.Fade
+                        font.pixelSize: Theme.fontSizeExtraSmall
+                        color: page.hs.error ? "#ff6b5e" : Theme.secondaryColor
+                        text: page.hs.syncing ? qsTr("Syncing with the watch…")
+                              : page.hs.error ? page.hs.error
+                              : page.hs.lastSync ? qsTr("Last sync %1").arg(ago(page.hs.lastSync))
+                              : qsTr("Not synced yet")
+                    }
+                }
+                Icon {
+                    id: healthArrow
+                    anchors { right: parent.right; rightMargin: Theme.horizontalPageMargin; verticalCenter: parent.verticalCenter }
+                    source: "image://theme/icon-m-right"
                 }
             }
 

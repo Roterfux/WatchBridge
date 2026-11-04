@@ -10,8 +10,11 @@ Page {
     readonly property var n: s.notifications || {}
     readonly property var w: s.weather || {}
     readonly property var watch: s.watch || {}
+    readonly property var hl: s.health || {}
 
     readonly property var intervals: [15, 30, 60, 120, 180]
+    readonly property var healthIntervals: [1, 3, 6, 12, 24]
+    readonly property var firstSyncDays: [1, 7, 14, 30]
 
     // Fetch the latest seen-apps list before showing the picker
     function openAppList(key, title, description) {
@@ -128,6 +131,68 @@ Page {
                     if (v !== w.interval_minutes)
                         daemon.updateSettings({ "weather": { "interval_minutes": v } })
                 }
+            }
+
+            SectionHeader { text: qsTr("Health") }
+
+            TextSwitch {
+                text: qsTr("Sync automatically")
+                description: qsTr("Fetch steps, heart rate and sleep from the watch while it is connected.")
+                checked: hl.enabled !== false
+                automaticCheck: false
+                onClicked: daemon.updateSettings({ "health": { "enabled": !checked } })
+            }
+            ComboBox {
+                label: qsTr("Sync every")
+                enabled: hl.enabled !== false
+                currentIndex: Math.max(0, page.healthIntervals.indexOf(hl.interval_hours || 6))
+                menu: ContextMenu {
+                    Repeater {
+                        model: page.healthIntervals
+                        MenuItem { text: qsTr("%n hour(s)", "", modelData) }
+                    }
+                }
+                onCurrentIndexChanged: {
+                    if (!page.s.health) return
+                    var v = page.healthIntervals[currentIndex]
+                    if (v !== hl.interval_hours)
+                        daemon.updateSettings({ "health": { "interval_hours": v } })
+                }
+            }
+            TextSwitch {
+                text: qsTr("Measure heart rate continuously")
+                description: hl.continuous_heart_rate === null || hl.continuous_heart_rate === undefined
+                             ? qsTr("Currently left to the watch's own setting. Without it, the watch records no heart rate between workouts. Uses more battery.")
+                             : qsTr("Sets the watch's continuous heart-rate measurement. Uses more battery.")
+                checked: hl.continuous_heart_rate === true
+                automaticCheck: false
+                onClicked: daemon.updateSettings({ "health": { "continuous_heart_rate": !checked } })
+            }
+            ComboBox {
+                label: qsTr("First sync reaches back")
+                description: qsTr("Only used while no data has been synced yet.")
+                currentIndex: Math.max(0, page.firstSyncDays.indexOf(hl.first_sync_days || 7))
+                menu: ContextMenu {
+                    Repeater {
+                        model: page.firstSyncDays
+                        MenuItem { text: qsTr("%n day(s)", "", modelData) }
+                    }
+                }
+                onCurrentIndexChanged: {
+                    if (!page.s.health) return
+                    var v = page.firstSyncDays[currentIndex]
+                    if (v !== hl.first_sync_days)
+                        daemon.updateSettings({ "health": { "first_sync_days": v } })
+                }
+            }
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeExtraSmall
+                color: Theme.secondaryColor
+                text: qsTr("Data is stored in %1 as a database and CSV files you can open in any spreadsheet.")
+                      .arg((daemon.status.health && daemon.status.health.folder) || "Documents/WatchBridge")
             }
 
             SectionHeader { text: qsTr("Watch display") }

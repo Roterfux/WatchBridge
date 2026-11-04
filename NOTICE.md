@@ -19,11 +19,13 @@ October and November 2026.
 | `huawei/crypto.py` | `devices/huawei/HuaweiCrypto.java`, `util/CryptoUtils.java` | © 2021–2024 Andreas Shimokawa, Damien Gaignon, José Rebelo, Martin.JM |
 | `huawei/hichain.py` | `service/devices/huawei/requests/GetHiChainRequest.java`, `devices/huawei/packets/DeviceConfig.java` (HiChain) | © 2024 Damien Gaignon, José Rebelo, Martin.JM |
 | `huawei/commands.py` | `devices/huawei/packets/DeviceConfig.java`, `Notifications.java`, `Weather.java`, `LocaleConfig.java`, `FindPhone.java`, `AccountRelated.java` | © 2024 Damien Gaignon, José Rebelo, Martin.JM, Vitalii Tomin |
+| `huawei/fitness.py` | `devices/huawei/packets/FitnessData.java`, `devices/huawei/HuaweiSampleProvider.java`, `service/devices/huawei/requests/GetFitnessTotalsRequest.java`, `GetStepDataCountRequest.java`, `GetStepDataRequest.java`, `GetSleepDataCountRequest.java`, `GetSleepDataRequest.java` | © 2024 Damien Gaignon, Martin.JM, Vitalii Tomin |
 | `huawei/device.py` | `service/devices/huawei/HuaweiSupportProvider.java`, `AsynchronousResponse.java`, `HuaweiWeatherManager.java`, `requests/*` | © 2024 Damien Gaignon, Martin.JM, Vitalii Tomin |
 
 Gadgetbridge source paths are relative to `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/`.
 
-`tests/test_protocol.py` uses packet test vectors taken from Gadgetbridge's unit tests (same authors and license).
+`tests/test_protocol.py` and `tests/test_fitness.py` use packet test vectors taken from Gadgetbridge's unit tests
+(`TestFitnessData.java` © 2022 Martin.JM; same license).
 
 Everything else is original WatchBridge code: the Sailfish OS user interface, the D-Bus service, BlueZ and
 RFCOMM handling, notification monitoring, the Open-Meteo client, the pure-Python AES (`huawei/aes.py`) and the

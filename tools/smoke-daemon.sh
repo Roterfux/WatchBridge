@@ -3,6 +3,8 @@
 # method the QML UI uses. Run as: dbus-run-session -- sh tools/smoke-daemon.sh [project dir]
 cd "${1:-$(dirname "$0")/..}"
 export PYTHONPATH=$(pwd)/daemon PYTHONDONTWRITEBYTECODE=1 XDG_CONFIG_HOME=$(mktemp -d)
+# The health store writes to ~/Documents/WatchBridge; keep it out of the real home
+export HOME=$(mktemp -d)
 python3 -m watchbridge -v >/tmp/watchbridge.log 2>&1 &
 PID=$!
 
@@ -18,6 +20,8 @@ done
 FAIL=0
 for m in GetStatus GetSettings GetDevices StartScan StopScan Connect Disconnect SendTestNotification \
          RefreshWeather SyncTime StopFindPhone "SetSettings '{\"weather\":{\"fahrenheit\":true}}'" \
+         SyncHealth "GetHealth ''" "GetHealth '2026-11-04'" "GetHealth 'not-a-date'" \
+         "SetSettings '{\"health\":{\"interval_hours\":3}}'" \
          "Forget false" "Pair 'AA:BB:CC:DD:EE:FF' 'HUAWEI WATCH GT 5'"; do
     out=$(eval call $m)
     echo "$m -> $out"

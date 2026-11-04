@@ -1,7 +1,7 @@
 # WatchBridge for Sailfish OS
 
 A companion app that connects a **Huawei Watch GT 5 / GT 5 Pro** to **Sailfish OS 5**: pairing,
-notification sync and weather, with no Huawei Health app and no Android App Support needed.
+notification sync, weather and health data, with no Huawei Health app and no Android App Support needed.
 
 The watch protocol is a Python port of the Huawei support in
 [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge), so this project is licensed AGPL-3.0 as well.
@@ -14,6 +14,13 @@ The watch protocol is a Python port of the Huawei support in
   apps that recently sent notifications. You can also choose whether system messages are included.
 - **Weather:** current conditions, a 24-hour hourly forecast and an 8-day forecast from
   [Open-Meteo](https://open-meteo.com) (no API key needed). Pushed on a schedule and whenever the watch asks.
+- **Health data:** today's totals, per-minute steps and heart rate (and SpO2 where the watch records it),
+  and basic sleep (light/deep) are fetched from the watch every few hours. Heart rate needs the watch's
+  continuous measurement, which you can switch on in the app's settings. On a Watch GT 5, sleep only comes
+  through TruSleep files, which aren't supported yet. They're stored on the phone in
+  `~/Documents/WatchBridge/` as an SQLite database plus CSV files: `activity-YYYY-MM.csv`, `sleep.csv` and
+  `daily.csv`. Open them in any spreadsheet, copy them over USB, or sync them with Nextcloud. A health
+  page shows steps per hour, the heart-rate curve and last night's sleep for any day.
 - **Extras:** time and time-zone sync, battery level, "find my phone" (the watch makes the phone ring),
   automatic reconnect, and a live status cover
 
@@ -22,8 +29,8 @@ The watch protocol is a Python port of the Huawei support in
 | | |
 |---|---|
 | Tested with | Huawei Watch GT 5 (VLI-B19, firmware 6.0.0.23) on a Sony Xperia with Sailfish OS 5.2.0.22 (aarch64) |
-| Verified on that watch | Pairing, HiChain authentication, encrypted connection, automatic reconnect, battery level |
-| Implemented, verified against a simulated watch | Notifications, weather, find my phone, time sync |
+| Verified on that watch | Pairing, HiChain authentication, encrypted connection, automatic reconnect, battery level, notification allow-list, health sync (totals, steps, distance, calories, heart rate) |
+| Implemented, verified against a simulated watch | Notifications on the watch, weather, find my phone, time sync |
 
 This is an early release. Please report what works and what doesn't on your watch and phone in the issues.
 Bluetooth logs help a lot (see [Troubleshooting](#troubleshooting)).
@@ -70,6 +77,7 @@ step 1, because the watch usually discards its half-finished pairing.
   apps) or from selected apps only. The app lists show every app that sent a notification recently, even
   filtered ones, and you can type in apps that haven't sent one yet.
 - **Weather:** on/off, location, units (°C / °F), update interval
+- **Health:** automatic sync on/off, sync interval, how far back the first sync reaches (1–30 days)
 - **Watch display:** 24-hour clock, date format
 - **Forget watch:** removes the pairing keys and the Bluetooth bond
 
@@ -175,9 +183,10 @@ dbus-run-session -- sh tools/smoke-daemon.sh "$PWD"
 
 ## Not (yet) ported
 
-Activity, sleep and workout sync, music control, call control, alarms, watchface and app installation, OTA
-updates and canned replies. Gadgetbridge supports all of these, and they can be built on top of
-`huawei/device.py`. Contributions are welcome.
+Detailed sleep (TruSleep), stress and ECG, which the watch sends as files; SpO2, HRV and skin temperature from the
+newer "data dictionary" sync; workouts with GPS tracks; music control, call control, alarms, watchface and
+app installation, OTA updates and canned replies. Gadgetbridge supports all of these, and they can be built on
+top of `huawei/device.py`. Contributions are welcome.
 
 Honor watches that use the PAKE/STS handshake are not supported.
 

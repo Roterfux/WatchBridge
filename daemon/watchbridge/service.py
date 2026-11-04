@@ -108,6 +108,9 @@ class _MainLoopListener(D.Listener):
     def on_weather_requested(self):
         self._post(self.service._watch_weather_requested)
 
+    def on_health_data(self, result):
+        self._post(self.service._watch_health_data, result)
+
 
 class Service(dbus.service.Object):
     def __init__(self, session_bus, system_bus, config=None):
@@ -131,6 +134,13 @@ class Service(dbus.service.Object):
         self._reconnect_source = None
         self._weather_source = None
         self._weather_busy = False
+        self._health = None
+        self._health_error = ""
+        self._health_syncing = False
+        self._health_last_result = None
+        self._open_health_store()
+        # Check every 15 minutes whether an automatic health sync is due
+        GLib.timeout_add_seconds(15 * 60, lambda: (self._maybe_sync_health(), True)[1])
         self._ngf_id = None
         self._pairing = False
         self._bluez = Bluez(system_bus, on_devices=self._devices_changed, on_connection=self._on_rfcomm,
@@ -155,8 +165,18 @@ class Service(dbus.service.Object):
     def SetSettings(self, changes_json):
         changes = json.loads(changes_json)
         old_weather = dict(self.config.data["weather"])
+        old_folder = self.config.data["health"].get("folder")
+        old_hr = self.config.data["health"].get("continuous_heart_rate")
         self.config.update_public(changes)
         self._apply_notification_settings()
+        if self.config.data["health"].get("folder") != old_folder:
+            self._open_health_store()
+            self._emit_status()
+        new_hr = self.config.data["health"].get("continuous_heart_rate")
+        if new_hr != old_hr and new_hr is not None and self._ready():
+            # Applied right away; otherwise at the next connection
+            self.watch.settings["continuous_heart_rate"] = new_hr
+            self.watch.set_automatic_heart_rate(bool(new_hr))
         if self.config.data["weather"] != old_weather:
             self._schedule_weather()
             self.weather_time = 0
@@ -261,6 +281,22 @@ class Service(dbus.service.Object):
         if self._ready():
             self.watch.stop_find_phone()
 
+    @dbus.service.method(IFACE, in_signature="", out_signature="")
+    def SyncHealth(self):
+        self._sync_health(announce=True)
+
+    @dbus.service.method(IFACE, in_signature="s", out_signature="s")
+    def GetHealth(self, day):
+        """Summary for one local date (YYYY-MM-DD, empty = today) as JSON."""
+        if self._health is None:
+            return json.dumps({"available": False, "error": self._health_error})
+        try:
+            summary = self._health.day_summary(str(day) or time.strftime("%Y-%m-%d"))
+        except ValueError as e:
+            return json.dumps({"available": True, "error": str(e)})
+        summary["available"] = True
+        return json.dumps(summary)
+
     @dbus.service.signal(IFACE, signature="s")
     def StatusChanged(self, status_json):
         pass
@@ -291,6 +327,14 @@ class Service(dbus.service.Object):
             "weatherError": self.weather_error,
             "notificationsForwarded": self.forwarded,
             "lastNotification": self.last_notification,
+            "health": {
+                "available": self._health is not None,
+                "syncing": self._health_syncing,
+                "lastSync": self.config.data["health"].get("last_sync", 0),
+                "error": self._health_error,
+                "lastResult": self._health_last_result,
+                "folder": self._health.folder if self._health is not None else "",
+            },
         }
 
     def _emit_status(self):
@@ -316,6 +360,7 @@ class Service(dbus.service.Object):
             "imperial": self.config.data["weather"]["fahrenheit"],
             "24h": w["time_24h"],
             "date_format": w["date_format"],
+            "continuous_heart_rate": self.config.data["health"].get("continuous_heart_rate"),
         }
 
     def _connect(self):
@@ -380,9 +425,15 @@ class Service(dbus.service.Object):
                 self.config.save()
             self._set_state("connected", "")
             self._refresh_weather(push=True)
+            # Let the watch settle before a possibly long transfer
+            GLib.timeout_add_seconds(20, lambda: (self._maybe_sync_health(), False)[1])
             return
         if state in (D.STATE_DISCONNECTED, D.STATE_AUTH_FAILED):
             self.watch = None
+            if self._health_syncing:
+                # The sync generator dies with the connection and never reports back
+                self._health_syncing = False
+                self._health_error = "The watch disconnected during the health sync"
             lasted = self._backoff.disconnected(time.monotonic())
             if lasted is not None and lasted < STABLE_CONNECTION:
                 log.info("Connection lasted only %ds, keeping the reconnect backoff", lasted)
@@ -463,6 +514,71 @@ class Service(dbus.service.Object):
                                      kind=n.kind, key="%s:%d:%s" % (n.app_name, n.replaces_id, n.summary))
         self.forwarded += 1
         self.last_notification = n.to_dict()
+        self._emit_status()
+
+    # ================================================================= health
+    def _open_health_store(self):
+        if self._health is not None:
+            self._health.close()
+            self._health = None
+        try:
+            from .health import HealthStore  # needs the sqlite3 module
+            self._health = HealthStore(self.config.data["health"].get("folder") or None)
+            self._health_error = ""
+            log.info("Health data folder: %s", self._health.folder)
+        except Exception as e:  # noqa: BLE001 - health is optional, the rest must keep working
+            log.error("Health data storage unavailable: %s", e)
+            self._health_error = "Health data storage unavailable: %s" % e
+
+    def _maybe_sync_health(self):
+        """Automatic sync: when connected, enabled and the last sync is older than the interval."""
+        h = self.config.data["health"]
+        if not h.get("enabled", True) or not self._ready():
+            return
+        interval = max(1, int(h.get("interval_hours") or 6)) * 3600
+        if time.time() - h.get("last_sync", 0) >= interval:
+            self._sync_health()
+
+    def _sync_health(self, announce=False):
+        if self._health is None:
+            if announce:
+                self.Message("error", self._health_error or "Health data storage unavailable")
+            return
+        if not self._ready():
+            if announce:
+                self.Message("error", "Watch is not connected")
+            return
+        if self._health_syncing:
+            return
+        now = time.time()
+        first = now - max(1, int(self.config.data["health"].get("first_sync_days") or 7)) * 86400
+        # Re-read the last stored minute/period: the watch may have filled them in since
+        step_start = self._health.last_activity_time() or first
+        sleep_start = self._health.last_sleep_end() or first
+        self._health_syncing = True
+        self._health_error = ""
+        self._emit_status()
+        log.info("Health sync from %s (activity) / %s (sleep)", time.ctime(step_start), time.ctime(sleep_start))
+        self.watch.sync_health(step_start, sleep_start)
+
+    def _watch_health_data(self, watch, result):
+        if not self._health_syncing:
+            return  # a sync that was abandoned when the link dropped
+        self._health_syncing = False
+        try:
+            counts = self._health.add_sync_result(result)
+        except Exception as e:  # noqa: BLE001 - e.g. disk full; keep the daemon alive
+            log.exception("Could not store health data")
+            self._health_error = "Could not store health data: %s" % e
+            self._emit_status()
+            return
+        counts["totals"] = result.get("totals")
+        counts["skipped"] = result.get("skipped", 0)
+        self._health_last_result = counts
+        self._health_error = result.get("error", "")
+        if not result.get("error"):
+            self.config.data["health"]["last_sync"] = int(result["end"])
+            self.config.save()
         self._emit_status()
 
     # ================================================================ weather

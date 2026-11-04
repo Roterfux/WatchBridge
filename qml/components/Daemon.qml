@@ -51,6 +51,11 @@ Item {
     function refreshWeather() { _call("RefreshWeather") }
     function syncTime() { _call("SyncTime") }
     function stopFindPhone() { _call("StopFindPhone") }
+    function syncHealth() { _call("SyncHealth") }
+    // Summary for one local date ("yyyy-MM-dd"), delivered to cb as an object
+    function getHealth(day, cb) {
+        _call("GetHealth", [{ "type": "s", "value": day }], function(json) { cb(JSON.parse(json)) })
+    }
 
     // Merge a partial settings object, e.g. { "weather": { "fahrenheit": true } }
     function updateSettings(changes) {

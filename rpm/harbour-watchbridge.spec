@@ -2,8 +2,8 @@
 
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
-Version:    0.1.0
-Release:    7
+Version:    0.2.0
+Release:    1
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -90,6 +90,15 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Wed Nov 04 2026 WatchBridge contributors - 0.2.0-1
+- Health sync: daily totals, per-minute steps and heart rate (SpO2 where recorded) and basic
+  sleep from the watch, every few hours and on demand
+- Stored in ~/Documents/WatchBridge as health.sqlite plus monthly activity, sleep and daily CSV files
+- New health page with hourly steps, heart-rate curve and last night's sleep for any day
+- Announce heart-rate capability to the watch and offer a "measure heart rate continuously"
+  switch; without it a GT 5 records no heart rate between workouts
+- Per-minute calories converted to kcal; non-sleep period types are no longer counted as sleep
+
 * Wed Nov 04 2026 WatchBridge contributors - 0.1.0-7
 - About page shows the exact app version and the running background service's version,
   and warns when they differ (e.g. an old service is still answering)

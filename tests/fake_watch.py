@@ -7,6 +7,7 @@ notification and weather code paths end to end over a socket pair.
 import json
 import os
 import socket
+import struct
 import threading
 import time
 
@@ -19,11 +20,16 @@ OK = TLV().put_int(0x7F, 0x000186A0)
 
 class FakeWatch:
     def __init__(self, sock, pin=b"123456", auth_token=None, device_support_type=4, encrypt_method=1,
-                 confirm_delay=0.0, drop_at=None):
+                 confirm_delay=0.0, drop_at=None, health=None):
         self.sock = sock
         self.pin = pin
         self.confirm_delay = confirm_delay  # seconds the "user" takes to tap the checkmark
         self.drop_at = drop_at              # (service, command) at which the watch hangs up
+        # Stored health records: {"totals": (steps, kcal, m), "steps": [{"base": t, "minutes":
+        # [(offset, data bytes)]}], "sleep": [{"periods": [(type, start, minutes)]}]}
+        self.health = health or {}
+        self.fitness_requests = []
+        self._step_window = self._sleep_window = []
         self.auth_token = auth_token  # known token = already paired
         self.params = Params()
         self.params.device_support_type = device_support_type
@@ -135,8 +141,46 @@ class FakeWatch:
             return None
         return self._hichain_reply({"errorCode": 2})
 
+    def _fitness(self, c, t):
+        """FitnessData (0x07) with the records in self.health."""
+        h = self.health
+        self.fitness_requests.append((c, t))
+        if c == 0x03:
+            steps, calories, distance = h.get("totals", (0, 0, 0))
+            # Two containers, as real watches split the totals by activity type
+            inner = TLV().put(0x83, TLV().put_int(0x05, steps - 100).put_short(0x06, calories).put_int(0x07, distance)) \
+                .put(0x83, TLV().put_int(0x05, 100))
+            return self._send(7, c, TLV().put(0x81, inner), True)
+        if c in (0x0A, 0x0C):
+            # Like the real watch: only messages that reach past the requested start
+            start = t.get_int(0x03)
+            if c == 0x0A:
+                self._step_window = [m for m in h.get("steps", []) if m["base"] + 3600 > start]
+                count = len(self._step_window)
+            else:
+                self._sleep_window = [m for m in h.get("sleep", [])
+                                      if max(s + 60 * n for _, s, n in m["periods"]) > start]
+                count = len(self._sleep_window)
+            return self._send(7, c, TLV().put(0x81, TLV().put_short(0x02, count)), True)
+        if c in (0x0B, 0x0D):
+            index = t.get_object(0x81).get_short(0x02)
+            if c == 0x0B:
+                m = self._step_window[index]
+                inner = TLV().put_short(0x02, index).put_int(0x03, m["base"])
+                for offset, data in m["minutes"]:
+                    inner.put(0x84, TLV().put_byte(0x05, offset).put(0x06, data))
+            else:
+                m = self._sleep_window[index]
+                inner = TLV().put_short(0x02, index)
+                for kind, start, minutes in m["periods"]:
+                    inner.put(0x83, TLV().put_byte(0x04, kind).put(0x05, struct.pack(">IH", start, minutes)))
+            return self._send(7, c, TLV().put(0x81, inner), True)
+        return self._send(7, c, OK, True)
+
     def _service(self, pkt):
         s, c, t = pkt.service, pkt.command, pkt.tlv
+        if s == 0x07:
+            return self._fitness(c, t)
         if (s, c) == (0x01, 0x07):
             return self._send(s, c, TLV().put(0x03, "HW1").put(0x07, "5.0.0.110").put(0x09, "SN123")
                               .put(0x0A, "HUAWEI WATCH GT 5 ").put(0x11, "HUAWEI WATCH GT 5-ABC"), True)

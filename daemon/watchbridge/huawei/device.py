@@ -12,11 +12,13 @@ import logging
 import queue
 import random
 import socket
+import struct
 import threading
 import time
 import zlib
 
 from . import commands as C
+from . import fitness as F
 from .commands import DC, NC, Service, WC
 from .crypto import HuaweiCrypto, generate_nonce, hexstr
 from .hichain import HiChain, HiChainError, OP_AUTH, OP_BIND
@@ -68,6 +70,10 @@ class Listener:
         pass
 
     def on_weather_requested(self):
+        pass
+
+    def on_health_data(self, result):
+        """A health sync finished (or stopped early, see result["error"])."""
         pass
 
 
@@ -187,6 +193,35 @@ class HuaweiWatch:
 
     def stop_find_phone(self):
         self.submit(lambda: self._send(C.find_phone_stop()))
+
+    def set_automatic_heart_rate(self, enabled):
+        self.submit(lambda: self._set_automatic_heart_rate(enabled))
+
+    def _set_automatic_heart_rate(self, enabled):
+        if not self.supports(F.SERVICE, 0x17):
+            log.info("The watch does not support switching continuous heart rate")
+            return
+        reply = self.request(F.automatic_heart_rate(enabled), 2.0)
+        log.info("Continuous heart rate %s: %s", "on" if enabled else "off",
+                 "ok" if reply is not None and reply.tlv.get_as_int(0x7F, C.RESULT_SUCCESS) == C.RESULT_SUCCESS
+                 else "no confirmation (%r)" % (reply.tlv if reply is not None else None))
+
+    def sync_health(self, step_start, sleep_start):
+        """Fetch totals, per-minute activity since step_start and sleep since sleep_start.
+
+        Runs one request per job, so notifications queued meanwhile are not held up
+        by a long first sync. The result arrives via Listener.on_health_data.
+        """
+        steps = self._health_steps(int(step_start), int(sleep_start))
+
+        def advance():
+            try:
+                next(steps)
+            except StopIteration:
+                return
+            self.submit(advance)
+
+        self.submit(advance)
 
     # ----------------------------------------------------------------- plumbing
     def _set_state(self, state, detail=""):
@@ -472,6 +507,14 @@ class HuaweiWatch:
             self.request(C.wear_status(), 2.0)
         if self.supports(0x01, DC.CONNECT_STATUS):
             self.request(C.connect_status(), 2.0)
+        # Tell the watch the phone handles heart-rate data (Gadgetbridge sends both)
+        if self.supports(0x17, 0x17):
+            self.request(F.notify_heart_rate_capability(), 2.0)
+        if self.supports(F.SERVICE, 0x23):
+            self.request(F.notify_rest_heart_rate_capability(), 2.0)
+        # None = leave the watch's own setting alone
+        if self.settings.get("continuous_heart_rate") is not None:
+            self._set_automatic_heart_rate(self.settings["continuous_heart_rate"])
         if self.supports(0x02, NC.ACTION) and self.protocol_version == 2:
             reply = self.request(C.notification_constraints())
             if reply is not None:
@@ -520,6 +563,78 @@ class HuaweiWatch:
                 self.submit(lambda: self._send(C.weather_device_ack()))
         elif key == (Service.FIND_PHONE, 0x01):
             self.listener.on_find_phone(packet.tlv.get_bool(0x01, False))
+
+    # ------------------------------------------------------------------ health
+    def _health_steps(self, step_start, sleep_start):
+        """Generator: one request per step (see sync_health), same order as Gadgetbridge:
+        sleep count + messages, step count + messages, then today's totals."""
+        end = int(time.time())
+        result = {"totals": None, "samples": [], "sleep": [], "skipped": 0, "error": "",
+                  "step_start": step_start, "sleep_start": sleep_start, "end": end}
+        try:
+            for key, count_cmd, data_cmd, start in (
+                    ("sleep", F.FC.SLEEP_COUNT, F.FC.SLEEP_DATA, sleep_start),
+                    ("activity", F.FC.STEP_COUNT, F.FC.STEP_DATA, step_start)):
+                if not self.is_ready():
+                    raise WatchError("The watch is not connected")
+                reply = self.request(F.message_count_request(count_cmd, max(start, F.EARLIEST), end))
+                if reply is None:
+                    log.info("Health sync: no answer to the %s count request, skipping it", key)
+                    continue
+                count = F.parse_message_count(reply.tlv)
+                log.info("Health sync: %d %s message(s) since %s", count, key, time.ctime(start))
+                yield
+                for index in range(count):
+                    if not self.is_ready():
+                        raise WatchError("The watch disconnected during the health sync")
+                    reply = self.request(F.message_data_request(data_cmd, index))
+                    if reply is None:
+                        raise WatchError("The watch did not answer %s message %d of %d" % (key, index + 1, count))
+                    try:
+                        if key == "sleep":
+                            number, periods = F.parse_sleep_data(reply.tlv)
+                            result["sleep"].extend(periods)
+                        else:
+                            number, samples, bad = F.parse_step_data(reply.tlv)
+                            result["samples"].extend(samples)
+                            result["skipped"] += bad
+                        if number != index:
+                            log.warning("Health sync: got %s message %d, asked for %d", key, number, index)
+                    except (KeyError, ValueError, IndexError, struct.error) as e:
+                        log.warning("Health sync: skipping unreadable %s message %d: %s %r", key, index, e, reply.tlv)
+                        result["skipped"] += 1
+                    yield
+            if self.is_ready():
+                reply = self.request(F.totals_request())
+                if reply is not None:
+                    try:
+                        result["totals"] = F.parse_totals(reply.tlv)
+                    except (KeyError, ValueError, struct.error) as e:
+                        log.warning("Health sync: unreadable totals: %s %r", e, reply.tlv)
+        except WatchError as e:
+            result["error"] = str(e)
+        log.info("Health sync done: %d minute(s), %d sleep period(s), totals %s%s",
+                 len(result["samples"]), len(result["sleep"]), result["totals"],
+                 (", error: " + result["error"]) if result["error"] else "")
+        # Fields this watch sends that we don't decode yet: worth reporting, they
+        # differ between models (Gadgetbridge logs each one as "Unknown tag")
+        unknown = {}
+        known = {}
+        for s in result["samples"]:
+            for key in s:
+                if key not in ("time", "unknown"):
+                    known[key] = known.get(key, 0) + 1
+            for bitmap, bit, value in s.get("unknown", ()):
+                u = unknown.setdefault((bitmap, bit), [0, value, value])
+                u[0] += 1
+                u[1] = min(u[1], value)
+                u[2] = max(u[2], value)
+        if result["samples"]:
+            log.info("Health sync: minutes per field %s", known)
+        for (bitmap, bit), (count, lo, hi) in sorted(unknown.items()):
+            log.info("Health sync: unknown activity field bitmap %d bit 0x%02x in %d minute(s), values %d..%d",
+                     bitmap, bit, count, lo, hi)
+        self.listener.on_health_data(result)
 
     # ----------------------------------------------------------- notifications
     def _next_msg_id(self):

@@ -43,6 +43,14 @@ DEFAULTS = {
         "time_24h": True,
         "date_format": 3,  # 1 = Y/M/D, 2 = M/D/Y, 3 = D/M/Y
     },
+    "health": {
+        "enabled": True,
+        "interval_hours": 6,     # automatic sync while connected
+        "first_sync_days": 7,    # how far back the very first sync reaches
+        "continuous_heart_rate": None,  # None = leave the watch's setting alone, else True/False
+        "folder": "",            # empty = ~/Documents/WatchBridge
+        "last_sync": 0,          # maintained by the daemon
+    },
 }
 
 # Keys the UI may not read or change
@@ -106,6 +114,9 @@ class Config:
         notif = changes.get("notifications")
         if isinstance(notif, dict):
             notif.pop("seen_apps", None)  # daemon managed
+        health = changes.get("health")
+        if isinstance(health, dict):
+            health.pop("last_sync", None)  # daemon managed
         _merge(self.data, {k: v for k, v in changes.items() if k in DEFAULTS})
         self.save()
 
