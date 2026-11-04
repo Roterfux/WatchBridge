@@ -31,7 +31,7 @@ Page {
             busy: daemon.busy
             MenuItem {
                 text: qsTr("About")
-                onClicked: pageStack.push(Qt.resolvedUrl("AboutPage.qml"))
+                onClicked: pageStack.push(Qt.resolvedUrl("AboutPage.qml"), { daemon: daemon })
             }
             MenuItem {
                 text: qsTr("Settings")
@@ -157,7 +157,10 @@ Page {
             TextSwitch {
                 visible: daemon.paired
                 text: qsTr("Forward notifications")
-                description: qsTr("%n notification(s) sent this session", "", status.notificationsForwarded || 0)
+                readonly property var ns: daemon.settings.notifications || {}
+                description: ns.mode === "selected" && (ns.allowed_apps || []).length === 0
+                             ? qsTr("Only selected apps are forwarded, and none is selected yet. Choose them in Settings.")
+                             : qsTr("%n notification(s) sent this session", "", status.notificationsForwarded || 0)
                 checked: daemon.settings.notifications ? daemon.settings.notifications.enabled : true
                 automaticCheck: false
                 onClicked: daemon.updateSettings({ "notifications": { "enabled": !checked } })

@@ -20,7 +20,7 @@ import dbus
 import dbus.service
 from gi.repository import GLib
 
-from . import weather
+from . import __version__, weather
 from .bluez import Bluez
 from .config import Config
 from .huawei import device as D
@@ -33,7 +33,45 @@ OBJECT_PATH = "/harbour/watchbridge"
 IFACE = "harbour.watchbridge.Daemon"
 
 RECONNECT_DELAYS = [5, 15, 30, 60, 120, 300]
+# A connection must last this long before the reconnect backoff starts over;
+# otherwise a link the watch drops right after setup is retried every 5 s forever.
+STABLE_CONNECTION = 60
 WEATHER_MAX_AGE = 30 * 60
+
+
+class ReconnectBackoff:
+    """Growing delays between reconnect attempts, reset only by a stable connection."""
+
+    def __init__(self, delays=RECONNECT_DELAYS, stable=STABLE_CONNECTION):
+        self.delays = delays
+        self.stable = stable
+        self.attempt = 0
+        self._since = None
+
+    def reset(self):
+        self.attempt = 0
+
+    def connected(self, now):
+        self._since = now
+
+    def disconnected(self, now):
+        """Returns how long the connection lasted (None if it never got connected)."""
+        if self._since is None:
+            return None
+        lasted, self._since = now - self._since, None
+        if lasted >= self.stable:
+            self.attempt = 0
+        return lasted
+
+    def next_delay(self):
+        delay = self.delays[min(self.attempt, len(self.delays) - 1)]
+        self.attempt += 1
+        return delay
+
+    @property
+    def flapping(self):
+        """True once more than one reconnect in a row was needed."""
+        return self.attempt > 1
 
 
 def _locale():
@@ -89,7 +127,7 @@ class Service(dbus.service.Object):
         self.weather_error = ""
         self.forwarded = 0
         self.last_notification = None
-        self._reconnect_attempt = 0
+        self._backoff = ReconnectBackoff()
         self._reconnect_source = None
         self._weather_source = None
         self._weather_busy = False
@@ -176,7 +214,7 @@ class Service(dbus.service.Object):
 
     @dbus.service.method(IFACE, in_signature="", out_signature="")
     def Connect(self):
-        self._reconnect_attempt = 0
+        self._backoff.reset()
         self._connect()
 
     @dbus.service.method(IFACE, in_signature="", out_signature="")
@@ -241,6 +279,7 @@ class Service(dbus.service.Object):
         return {
             "state": self.state,
             "detail": self.detail,
+            "daemonVersion": __version__,
             "address": dev["address"],
             "name": dev["name"],
             "battery": self.battery,
@@ -303,6 +342,12 @@ class Service(dbus.service.Object):
             log.warning("Ignoring RFCOMM connection from unexpected device %s", address)
             sock.close()
             return
+        if self.watch is not None and self.watch.is_alive():
+            # A second socket for the same watch (e.g. BlueZ delivering after our direct
+            # fallback already connected) would tear down the working session.
+            log.info("Already connected to %s, closing the extra RFCOMM connection", address)
+            sock.close()
+            return
         if self.watch is not None:
             self.watch.stop()
         dev = self.config.data["device"]
@@ -328,7 +373,7 @@ class Service(dbus.service.Object):
             self._set_state("authenticating", "confirm_on_watch")
             return
         if state == D.STATE_CONNECTED:
-            self._reconnect_attempt = 0
+            self._backoff.connected(time.monotonic())
             self._pairing = False
             if not self.config.data["device"]["name"] and self.info.get("device_name"):
                 self.config.data["device"]["name"] = self.info["device_name"]
@@ -338,6 +383,9 @@ class Service(dbus.service.Object):
             return
         if state in (D.STATE_DISCONNECTED, D.STATE_AUTH_FAILED):
             self.watch = None
+            lasted = self._backoff.disconnected(time.monotonic())
+            if lasted is not None and lasted < STABLE_CONNECTION:
+                log.info("Connection lasted only %ds, keeping the reconnect backoff", lasted)
             was_pairing = self._pairing
             self._pairing = False
             if state == D.STATE_AUTH_FAILED:
@@ -367,8 +415,9 @@ class Service(dbus.service.Object):
     def _bt_device_connected(self, address, connected):
         if address.upper() != self.config.data["device"]["address"].upper():
             return
+        # Skip the shortcut while the link is flapping, so the backoff can do its job
         if connected and self.watch is None and self.state in ("disconnected",) \
-                and self.config.data["auto_reconnect"]:
+                and self.config.data["auto_reconnect"] and not self._backoff.flapping:
             # The watch came back into range; reconnect promptly
             self._cancel_reconnect()
             GLib.timeout_add_seconds(2, lambda: (self._connect(), False)[1])
@@ -377,8 +426,7 @@ class Service(dbus.service.Object):
         if not self.config.data["auto_reconnect"] or not self.config.data["device"]["address"]:
             return
         self._cancel_reconnect()
-        delay = RECONNECT_DELAYS[min(self._reconnect_attempt, len(RECONNECT_DELAYS) - 1)]
-        self._reconnect_attempt += 1
+        delay = self._backoff.next_delay()
         log.info("Reconnecting in %ds", delay)
 
         def fire():

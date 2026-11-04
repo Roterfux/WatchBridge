@@ -14,6 +14,7 @@ search and RFCOMM socket, see rfcomm.py.
 import logging
 import socket
 import threading
+import time
 
 import dbus
 import dbus.service
@@ -81,6 +82,7 @@ class Bluez:
         self.devices = {}  # path -> props
         self.scanning = False
         self._profile_registered = False
+        self._last_connection = {}  # address -> monotonic time the last socket was delivered
         self._profile = _Profile(bus, PROFILE_PATH, self)
         self._refresh()
         bus.add_signal_receiver(self._interfaces_added, "InterfacesAdded", OBJ_MANAGER, BLUEZ)
@@ -249,11 +251,17 @@ class Bluez:
             self._connect_direct(address, on_error)
             return
         dev = self._device(address)
+        started = time.monotonic()
 
         def failed(e):
             name = e.get_dbus_name()
             if "AlreadyConnected" in name or "InProgress" in name:
                 log.info("ConnectProfile: %s", name)
+                return
+            if self._last_connection.get(address.upper(), 0) >= started:
+                # NewConnection already handed us the socket; the reply just came late
+                # (e.g. a NoReply timeout). A fallback now would replace a working link.
+                log.info("ConnectProfile reported %s after the connection was made, ignoring", name)
                 return
             log.warning("ConnectProfile failed (%s: %s), trying a direct connection", name, e.get_dbus_message())
             self._connect_direct(address, on_error)
@@ -295,6 +303,7 @@ class Bluez:
         self._connected(address, sock)
 
     def _connected(self, address, sock):
+        self._last_connection[address.upper()] = time.monotonic()
         # Trusted lets the watch reconnect on its own (the bond may come from the watch, not Pair())
         if not self.device_props(address).get("Trusted"):
             self._trust(address)

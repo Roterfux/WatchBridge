@@ -3,7 +3,7 @@
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
 Version:    0.1.0
-Release:    6
+Release:    7
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -43,6 +43,13 @@ cp -r qml %{buildroot}%{_datadir}/%{name}/
 install -d %{buildroot}%{_datadir}/%{name}/daemon
 cp -r daemon/watchbridge %{buildroot}%{_datadir}/%{name}/daemon/
 find %{buildroot}%{_datadir}/%{name}/daemon -name __pycache__ -prune -exec rm -rf {} \;
+# Stamp the exact package version into the daemon and the About page (fail if a marker moved)
+sed -i 's/^__version__ = .*/__version__ = "%{version}-%{release}"/' \
+    %{buildroot}%{_datadir}/%{name}/daemon/watchbridge/__init__.py
+sed -i 's/appVersion: "[^"]*"/appVersion: "%{version}-%{release}"/' \
+    %{buildroot}%{_datadir}/%{name}/qml/pages/AboutPage.qml
+grep -q '"%{version}-%{release}"' %{buildroot}%{_datadir}/%{name}/daemon/watchbridge/__init__.py
+grep -q 'appVersion: "%{version}-%{release}"' %{buildroot}%{_datadir}/%{name}/qml/pages/AboutPage.qml
 
 install -D -m 0755 data/harbour-watchbridge-daemon %{buildroot}%{_bindir}/harbour-watchbridge-daemon
 sed -i 's/\r$//' %{buildroot}%{_bindir}/harbour-watchbridge-daemon
@@ -83,6 +90,13 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Wed Nov 04 2026 WatchBridge contributors - 0.1.0-7
+- About page shows the exact app version and the running background service's version,
+  and warns when they differ (e.g. an old service is still answering)
+- Never let a late or second Bluetooth connection replace a working one
+- Reconnect backoff only starts over after a connection lasted a minute
+- Main page explains when "selected apps only" is on but no app is selected
+
 * Tue Nov 03 2026 WatchBridge contributors - 0.1.0-6
 - Notifications: "selected apps only" mode (allow-list) next to the existing muted apps
 - Remember apps that sent notifications and offer them as switches in the app lists

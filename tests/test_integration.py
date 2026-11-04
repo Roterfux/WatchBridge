@@ -2,22 +2,17 @@
 
 import json
 import os
+import socket
 import sys
 import tempfile
-import types
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "daemon"))
-
-# Minimal stand-in so the modules import without dbus-python installed
-if "dbus" not in sys.modules:
-    fake = types.ModuleType("dbus")
-    fake.bus = types.ModuleType("dbus.bus")
-    fake.DBusException = Exception
-    sys.modules["dbus"] = fake
-    sys.modules["dbus.bus"] = fake.bus
+sys.path.insert(0, os.path.dirname(__file__))
+import stubs  # noqa: E402,F401  - dbus/GLib stand-ins when they are not installed
 
 from watchbridge.config import Config  # noqa: E402
+from watchbridge.bluez import Bluez  # noqa: E402
+from watchbridge.service import ReconnectBackoff, Service  # noqa: E402
 from watchbridge.notifications import Notification, NotificationMonitor  # noqa: E402
 
 
@@ -123,6 +118,109 @@ class TestConfig(unittest.TestCase):
         c.update_public({"notifications": {"mode": "selected", "seen_apps": {}}})
         self.assertEqual(len(c.data["notifications"]["seen_apps"]), 60)  # the UI cannot wipe it
         self.assertEqual(c.data["notifications"]["mode"], "selected")
+
+
+ADDR = "A8:6E:4E:B0:F0:F7"
+
+
+class FakeDBusError(Exception):
+    def __init__(self, name):
+        super().__init__(name)
+        self.name = name
+
+    def get_dbus_name(self):
+        return self.name
+
+    def get_dbus_message(self):
+        return "no reply"
+
+
+class TestBluezConnect(unittest.TestCase):
+    """ConnectProfile answering late must not start a second (direct) connection."""
+
+    def make(self):
+        from watchbridge.bluez import HUAWEI_SPP_UUID
+        b = Bluez.__new__(Bluez)  # no system bus needed
+        b.adapter_path = "/org/bluez/hci1"
+        b.devices = {"/org/bluez/hci1/dev_A8_6E_4E_B0_F0_F7":
+                     {"Address": ADDR, "UUIDs": [HUAWEI_SPP_UUID], "Trusted": True}}
+        b._profile_registered = True
+        b._register_profile = lambda: None
+        b._last_connection = {}
+        b.delivered, b.direct, b.errors, handlers = [], [], [], {}
+        b.on_connection = lambda address, sock: b.delivered.append(address)
+        b._connect_direct = lambda address, on_error: b.direct.append(address)
+
+        class Device:
+            def ConnectProfile(self, uuid, reply_handler, error_handler, timeout):
+                handlers["error"] = error_handler
+
+        b._device = lambda address, iface=None: Device()
+        b.connect(ADDR, b.errors.append)
+        return b, handlers["error"]
+
+    def test_late_error_after_new_connection_is_ignored(self):
+        b, error = self.make()
+        b._connected(ADDR, object())  # Profile1.NewConnection delivered the socket
+        error(FakeDBusError("org.freedesktop.DBus.Error.NoReply"))
+        self.assertEqual((b.delivered, b.direct, b.errors), ([ADDR], [], []))
+
+    def test_error_without_connection_falls_back_to_direct(self):
+        b, error = self.make()
+        error(FakeDBusError("org.bluez.Error.Failed"))
+        self.assertEqual(b.direct, [ADDR])
+
+
+class TestServiceRfcomm(unittest.TestCase):
+    def test_extra_socket_does_not_replace_live_connection(self):
+        s = Service.__new__(Service)  # no D-Bus needed for this path
+        s.config = Config(os.path.join(tempfile.mkdtemp(), "config.json"))
+        s.config.data["device"]["address"] = ADDR
+
+        class LiveWatch:
+            def is_alive(self):
+                return True
+
+            def stop(self):
+                raise AssertionError("the working connection was stopped")
+
+        live = s.watch = LiveWatch()
+        extra, other = socket.socketpair()
+        self.addCleanup(other.close)
+        s._on_rfcomm(ADDR, extra)
+        self.assertIs(s.watch, live)
+        self.assertEqual(extra.fileno(), -1)  # closed
+
+
+class TestReconnectBackoff(unittest.TestCase):
+    def test_short_connections_keep_growing_the_delay(self):
+        b = ReconnectBackoff()
+        delays = []
+        for i in range(4):  # the watch drops every link ~20 s after setup
+            b.connected(i * 100)
+            self.assertEqual(b.disconnected(i * 100 + 20), 20)
+            delays.append(b.next_delay())
+        self.assertEqual(delays, [5, 15, 30, 60])
+        self.assertTrue(b.flapping)
+
+    def test_stable_connection_resets(self):
+        b = ReconnectBackoff()
+        b.next_delay(), b.next_delay()
+        b.connected(0)
+        b.disconnected(600)
+        self.assertEqual(b.next_delay(), 5)
+        self.assertIsNone(b.disconnected(700))  # not connected in between
+
+
+class TestVersionMarkers(unittest.TestCase):
+    """rpm/harbour-watchbridge.spec stamps the version into these two lines."""
+
+    def test_markers_present(self):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "daemon", "watchbridge", "__init__.py"), encoding="utf-8") as f:
+            self.assertRegex(f.read(), r'(?m)^__version__ = "[^"]*"$')
+        with open(os.path.join(root, "qml", "pages", "AboutPage.qml"), encoding="utf-8") as f:
+            self.assertEqual(f.read().count('appVersion: "'), 1)
 
 
 if __name__ == "__main__":

@@ -19,14 +19,17 @@ def main():
     import dbus.mainloop.glib
     from gi.repository import GLib
 
+    from . import __version__
     from .service import Service
 
+    logging.info("WatchBridge daemon %s", __version__)
     dbus.mainloop.glib.threads_init()
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     loop = GLib.MainLoop()
     session = dbus.SessionBus()
     if session.name_has_owner("harbour.watchbridge"):
-        logging.error("WatchBridge daemon already running")
+        logging.error("Another WatchBridge daemon (perhaps a debug copy started by hand) already owns "
+                      "harbour.watchbridge; stop it first")
         return 1
     Service(session, dbus.SystemBus())
 

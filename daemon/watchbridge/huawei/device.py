@@ -172,6 +172,10 @@ class HuaweiWatch:
     def is_ready(self):
         return self.state == STATE_CONNECTED
 
+    def is_alive(self):
+        """True from start() until the link is closed (handshake included)."""
+        return self._running
+
     def send_notification(self, title, body, sender="", app_id="", kind=C.NotificationType.GENERIC, key=None):
         self.submit(lambda: self._send_notification(title, body, sender, app_id, kind, key))
 
