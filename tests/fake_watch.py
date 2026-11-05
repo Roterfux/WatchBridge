@@ -30,7 +30,8 @@ class _Raw:
 
 class FakeWatch:
     def __init__(self, sock, pin=b"123456", auth_token=None, device_support_type=4, encrypt_method=1,
-                 confirm_delay=0.0, drop_at=None, health=None, files=None, file_block=300):
+                 confirm_delay=0.0, drop_at=None, health=None, files=None, file_block=300,
+                 upload_unit=300, upload_window=1000, upload_no_encrypt=0, upload_refuse=None):
         self.sock = sock
         self.pin = pin
         self.confirm_delay = confirm_delay  # seconds the "user" takes to tap the checkmark
@@ -56,6 +57,15 @@ class FakeWatch:
         self.notifications = []
         self.forecasts = []
         self.chain = {}
+        # Watch faces (service 0x27) and the upload (0x28)
+        self.faces = [{"file": "100000001", "version": "1.0.0", "type": 0x03, "name": "Classic"}]
+        self.upload_unit = upload_unit        # bytes per 0x28/0x06 packet
+        self.upload_window = upload_window    # bytes asked for per 0x28/0x05
+        self.upload_no_encrypt = upload_no_encrypt
+        self.upload_refuse = upload_refuse    # error code for the file info, e.g. 140004
+        self.upload = None                    # {"name", "size", "data", "hash", ...}
+        self.uploaded = []                    # (file name, bytes) of completed uploads
+        self.chunk_packets = 0
         self.thread = threading.Thread(target=self._loop, daemon=True)
 
     def start(self):
@@ -216,12 +226,101 @@ class FakeWatch:
             return None
         return self._send(0x2C, c, OK, True)
 
+    def _watchfaces(self, c, t):
+        if c == 0x01:
+            # As a GT 5 (firmware 6.0.0.23) answers
+            return self._send(0x27, 0x01, TLV().put(0x01, "2.9").put_short(0x02, 466).put_short(0x03, 466)
+                              .put_byte(0x04, 1).put_byte(0x05, 0).put(0x06, "2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8"),
+                              True)
+        if c == 0x02:
+            lst = TLV()
+            for f in self.faces:
+                lst.put(0x82, TLV().put(0x03, f["file"]).put(0x04, f["version"]).put_byte(0x05, f["type"]))
+            return self._send(0x27, 0x02, TLV().put(0x81, lst), True)
+        if c == 0x06:
+            names = TLV()
+            for sub in t.get_object(0x82).get_objects(0x83):
+                face = [f for f in self.faces if f["file"] == sub.get_string(0x04)]
+                if face:
+                    names.put(0x83, TLV().put(0x04, face[0]["file"]).put(0x05, face[0]["name"]))
+            return self._send(0x27, 0x06, TLV().put(0x82, names), True)
+        if c == 0x03:
+            name, op = t.get_string(0x01), t.get_byte(0x03)
+            if op == 1:
+                for f in self.faces:
+                    f["type"] = (f["type"] & ~0x01) | (0x01 if f["file"] == name else 0)
+            elif op == 2:
+                self.faces = [f for f in self.faces if f["file"] != name]
+            return self._send(0x27, 0x03, OK, True)
+        if c == 0x05:
+            return None  # the phone confirms our install report
+        return self._send(0x27, c, OK, True)
+
+    def _upload(self, c, t, pkt):
+        if c == 0x02:
+            if self.upload_refuse:
+                return self._send(0x28, 0x02, TLV().put_int(0x7F, self.upload_refuse), True)
+            name = t.get_string(0x01)
+            self.upload = {"name": name, "size": t.get_int(0x02), "data": bytearray(t.get_int(0x02)),
+                           "got": set(), "id": 9, "face": (t.get_string(0x05), t.get_string(0x06))}
+            self._send(0x28, 0x02, OK, True)
+            return self._send(0x28, 0x03, TLV().put_byte(0x01, 9), True)  # "send the hash"
+        if c == 0x03:
+            self.upload["hash"] = t.get_bytes(0x03)
+            consult = TLV().put_byte(0x01, 9).put(0x02, "2.0").put_byte(0x03, 5).put_byte(0x04, 0) \
+                .put_short(0x05, self.upload_unit).put_int(0x06, self.upload_window).put_byte(0x07, 0) \
+                .put_int(0x08, 0).put_byte(0x09, self.upload_no_encrypt)
+            return self._send(0x28, 0x04, consult, True)
+        if c == 0x04:
+            self.upload["ack"] = t
+            return self._ask_next(0)
+        if c == 0x06:
+            return self._chunk(pkt)
+        return None  # 0x07 ack: done
+
+    def _ask_next(self, offset):
+        size = min(self.upload_window, self.upload["size"] - offset)
+        self.upload["window"] = (offset, offset + size)
+        return self._send(0x28, 0x05, TLV().put_byte(0x01, 9).put_int(0x02, offset).put_int(0x03, size), True)
+
+    def _chunk(self, pkt):
+        body = pkt.payload[2:]
+        if body[:3] == b"\x7c\x01\x01":  # encrypted: an encryption TLV around the raw chunk
+            tlv = TLV.parse(body)
+            body = crypto.decrypt(self.params.use_gcm(), tlv.get_bytes(0x7E), self.params.secret_key,
+                                  tlv.get_bytes(0x7D))
+            self.upload["encrypted"] = True
+        file_id, _index, offset = struct.unpack(">BBI", body[:6])
+        data = body[6:]
+        assert file_id == 9
+        self.chunk_packets += 1
+        self.upload["data"][offset:offset + len(data)] = data
+        self.upload["got"].update(range(offset, offset + len(data)))
+        start, end = self.upload["window"]
+        if not all(i in self.upload["got"] for i in range(start, end)):
+            return None
+        if end < self.upload["size"]:
+            return self._ask_next(end)
+        data = bytes(self.upload["data"])
+        import hashlib
+        assert hashlib.sha256(data).digest() == self.upload["hash"], "hash mismatch"
+        self.uploaded.append((self.upload["name"], data))
+        name, version = self.upload["face"]
+        self.faces.append({"file": name, "version": version, "type": 0x00, "name": "Uploaded face"})
+        self._send(0x28, 0x07, TLV().put_byte(0x01, 9).put_byte(0x02, 1), True)
+        # Installed: ask the phone to confirm and to make it the current face
+        return self._send(0x27, 0x05, TLV().put(0x01, name).put(0x02, version).put_byte(0x03, 0x02), True)
+
     def _service(self, pkt):
         s, c, t = pkt.service, pkt.command, pkt.tlv
         if s == 0x07:
             return self._fitness(c, t)
         if s == 0x2C:
             return self._files(c, t)
+        if s == 0x27:
+            return self._watchfaces(c, t)
+        if s == 0x28:
+            return self._upload(c, t, pkt)
         if (s, c) == (0x01, 0x31):
             return self._send(s, c, TLV().put_byte(0x02, 0x04 | 0x02), True)  # RRI and TruSleep new sync
         if (s, c) == (0x01, 0x07):
@@ -233,7 +332,7 @@ class FakeWatch:
             return self._send(s, c, TLV().put_byte(0x01, 87), True)
         if (s, c) == (0x01, 0x02):
             from watchbridge.huawei.commands import KNOWN_SUPPORTED_SERVICES
-            bitmap = bytes(1 if x in (0x02, 0x07, 0x0B, 0x0C, 0x0F, 0x20) else 0 for x in KNOWN_SUPPORTED_SERVICES)
+            bitmap = bytes(1 if x in (0x02, 0x07, 0x0B, 0x0C, 0x0F, 0x20, 0x27) else 0 for x in KNOWN_SUPPORTED_SERVICES)
             return self._send(s, c, TLV().put(0x02, bitmap), True)
         if (s, c) == (0x01, 0x03):
             out = TLV()

@@ -26,6 +26,9 @@ The watch protocol is a Python port of the Huawei support in
   `~/Documents/WatchBridge/` as an SQLite database plus CSV files: `activity-YYYY-MM.csv`, `sleep.csv`,
   `sleep-sessions.csv`, `stress.csv` and `daily.csv`. Open them in any spreadsheet, copy them over USB, or sync them with Nextcloud. A health
   page shows steps per hour, the heart-rate curve and last night's sleep for any day.
+- **Watch faces:** see the faces installed on the watch, switch between them, delete downloaded ones, and install
+  new ones from .hwt files (for example faces you made with Huawei's Watchface Studio). The app checks that a
+  face was made for the watch's screen before sending it.
 - **Extras:** time and time-zone sync, battery level, "find my phone" (the watch makes the phone ring),
   automatic reconnect, and a live status cover
 
@@ -189,7 +192,7 @@ dbus-run-session -- sh tools/smoke-daemon.sh "$PWD"
 ## Not (yet) ported
 
 Sleep and stress files of older watches (service 0x0A) and ECG; SpO2, HRV and skin temperature from the
-newer "data dictionary" sync; workouts with GPS tracks; music control, outgoing calls and Bluetooth calling on the watch, alarms, watchface and
+newer "data dictionary" sync; workouts with GPS tracks; music control, outgoing calls and Bluetooth calling on the watch, alarms, watch
 app installation, OTA updates and canned replies. Gadgetbridge supports all of these, and they can be built on
 top of `huawei/device.py`. Contributions are welcome.
 

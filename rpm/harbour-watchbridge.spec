@@ -2,8 +2,8 @@
 
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
-Version:    0.4.0
-Release:    8
+Version:    0.5.0
+Release:    2
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -14,6 +14,7 @@ Requires:   mapplauncherd-booster-silica-qt5
 Requires:   nemo-qml-plugin-dbus-qt5
 Requires:   nemo-qml-plugin-notifications-qt5
 Requires:   qt5-qtdeclarative-import-positioning
+Requires:   qt5-qtgraphicaleffects
 # Daemon
 Requires:   python3-base
 Requires:   dbus-python3
@@ -98,6 +99,26 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Thu Nov 05 2026 WatchBridge contributors - 0.5.0-2
+- Watch faces are registered under a face-format version the watch supports (the oldest
+  it lists, 2.1 on a GT 5) instead of 1.0.0; a face sent as 1.0.0 showed up garbled and
+  could not be selected
+- Delete button next to every face that can be deleted
+- The start page shows the face that is on the watch when it was installed with WatchBridge
+  (its preview is kept); otherwise the drawn watch as before. The face list is read after
+  connecting and when the app comes to the front
+- Round previews in the install dialog and in the list
+
+* Thu Nov 05 2026 WatchBridge contributors - 0.5.0-1
+- Watch faces: list the faces on the watch, switch to one, delete downloaded ones, and install
+  .hwt packages with a preview, a screen-size check and upload progress (file upload service
+  0x28 and watch-face service 0x27, ported from Gadgetbridge)
+- No automatic health sync while a watch face is being sent
+
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-9
+- The notifications part (forward switch with its counter, last notification, test
+  notification) moved from the main page to the settings
+
 * Thu Nov 05 2026 WatchBridge contributors - 0.4.0-8
 - Main page: firmware version without the build suffix in brackets
 
