@@ -16,6 +16,10 @@ The watch protocol is a Python port of the Huawei support in
 - **Incoming calls:** the watch shows the caller's name (or number) and can reject the call. The call screen
   closes when you answer or the call ends. Names come from Sailfish Contacts through a small sandboxed helper
   (Sailfish asks once for the Contacts permission); they're kept in memory only.
+- **Calendar:** your events appear in the calendar app on the watch, recurring ones included, as far ahead as
+  the watch asks for (35 days on a GT 5). Changes reach it within half an hour, or right away with
+  *Sync calendar now* in the settings. Events have no location or reminders on the watch, since Sailfish's calendar
+  service doesn't hand those out; reminders still arrive as forwarded notifications.
 - **Weather:** current conditions, a 24-hour hourly forecast and an 8-day forecast from
   [Open-Meteo](https://open-meteo.com) (no API key needed). Pushed on a schedule and whenever the watch asks.
 - **Health data:** today's totals, per-minute steps and heart rate (and SpO2 where the watch records it),
@@ -37,7 +41,7 @@ The watch protocol is a Python port of the Huawei support in
 | | |
 |---|---|
 | Tested with | Huawei Watch GT 5 (VLI-B19, firmware 6.0.0.23) on a Sony Xperia with Sailfish OS 5.2.0.22 (aarch64) |
-| Verified on that watch | Pairing, HiChain authentication, encrypted connection, automatic reconnect, battery level, notification allow-list, health sync (totals, steps, distance, calories, heart rate, TruSleep stages and score) |
+| Verified on that watch | Pairing, HiChain authentication, encrypted connection, automatic reconnect, battery level, notification allow-list, health sync (totals, steps, distance, calories, heart rate, TruSleep stages and score), watch-face upload, calendar transfer |
 | Implemented, verified against a simulated watch | Notifications on the watch, weather, find my phone, time sync, stress, incoming calls |
 
 This is an early release. Please report what works and what doesn't on your watch and phone in the issues.

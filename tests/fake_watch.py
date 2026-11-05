@@ -31,7 +31,8 @@ class _Raw:
 class FakeWatch:
     def __init__(self, sock, pin=b"123456", auth_token=None, device_support_type=4, encrypt_method=1,
                  confirm_delay=0.0, drop_at=None, health=None, files=None, file_block=300,
-                 upload_unit=300, upload_window=1000, upload_no_encrypt=0, upload_refuse=None):
+                 upload_unit=300, upload_window=1000, upload_no_encrypt=0, upload_refuse=None,
+                 calendar_present=True, calendar_major="", calendar_minor=0, calendar_limit=100):
         self.sock = sock
         self.pin = pin
         self.confirm_delay = confirm_delay  # seconds the "user" takes to tap the checkmark
@@ -66,6 +67,18 @@ class FakeWatch:
         self.upload = None                    # {"name", "size", "data", "hash", ...}
         self.uploaded = []                    # (file name, bytes) of completed uploads
         self.chunk_packets = 0
+        # The calendar app, reached over P2P (0x34) and fed by a file upload of type 7
+        self.calendar_present = calendar_present    # answers pings with 0xCA
+        self.calendar_major = calendar_major        # the version it reports
+        self.calendar_minor = calendar_minor
+        self.calendar_limit = calendar_limit
+        self.calendar_days = 7
+        self.calendar_keeps_minor = False           # never reports version 0, even when emptied
+        self.calendar_events = {}                   # event_uuid -> event
+        self.calendar_files = []                    # parsed uploads: {"full", "documents"}
+        self.calendar_commands = []                 # bytes the phone sent to the app
+        self.calendar_answers = []                  # P2P acks from the phone
+        self.calendar_info = None                   # TLV of the last calendar file info
         self.thread = threading.Thread(target=self._loop, daemon=True)
 
     def start(self):
@@ -261,8 +274,13 @@ class FakeWatch:
             if self.upload_refuse:
                 return self._send(0x28, 0x02, TLV().put_int(0x7F, self.upload_refuse), True)
             name = t.get_string(0x01)
+            kind = t.get_byte(0x03)
             self.upload = {"name": name, "size": t.get_int(0x02), "data": bytearray(t.get_int(0x02)),
-                           "got": set(), "id": 9, "face": (t.get_string(0x05), t.get_string(0x06))}
+                           "got": set(), "id": 9, "type": kind}
+            if kind == 1:
+                self.upload["face"] = (t.get_string(0x05), t.get_string(0x06))
+            else:
+                self.calendar_info = t
             self._send(0x28, 0x02, OK, True)
             return self._send(0x28, 0x03, TLV().put_byte(0x01, 9), True)  # "send the hash"
         if c == 0x03:
@@ -305,14 +323,66 @@ class FakeWatch:
         import hashlib
         assert hashlib.sha256(data).digest() == self.upload["hash"], "hash mismatch"
         self.uploaded.append((self.upload["name"], data))
+        if self.upload["type"] == 7:
+            self._calendar_file(data)
+            return self._send(0x28, 0x07, TLV().put_byte(0x01, 9).put_byte(0x02, 1), True)
         name, version = self.upload["face"]
         self.faces.append({"file": name, "version": version, "type": 0x00, "name": "Uploaded face"})
         self._send(0x28, 0x07, TLV().put_byte(0x01, 9).put_byte(0x02, 1), True)
         # Installed: ask the phone to confirm and to make it the current face
         return self._send(0x27, 0x05, TLV().put(0x01, name).put(0x02, version).put_byte(0x03, 0x02), True)
 
+    def _p2p(self, t):
+        cmd, seq = t.get_byte(0x01), t.get_short(0x02)
+        source, destination = t.get_string(0x03), t.get_string(0x04)
+        if cmd == 1:
+            code = 0xCA if self.calendar_present else 0xCF
+            reply = TLV().put_byte(0x01, 3).put_short(0x02, seq).put(0x03, destination).put(0x04, source) \
+                .put_byte(0x08, code)
+            return self._send(0x34, 0x01, reply, True)
+        if cmd == 3:
+            return self.calendar_answers.append(t)
+        body = t.get_bytes(0x07)
+        self.calendar_commands.append(body)
+        if body == bytes([0x01, 0x01, 0x01, 0x01]):
+            return self.calendar_ask()
+        return None
+
+    def calendar_ask(self, mode=2):
+        """The app's answer to a sync request, also sent when the watch wants a sync itself."""
+        # A GT 5 without a version sends 64 zero bytes, not an empty value
+        major = self.calendar_major or "\0" * 64
+        body = TLV().put_byte(0x01, mode).put(0x02, major).put_short(0x03, self.calendar_minor) \
+            .put_short(0x04, self.calendar_limit).put_byte(0x05, self.calendar_days)
+        message = TLV().put_byte(0x01, 2).put_short(0x02, 77).put(0x03, "in.huawei.calendar") \
+            .put(0x04, "hw.unitedevice.calendarapp").put(0x05, "SystemApp").put(0x06, "UniteDeviceManagement") \
+            .put(0x07, bytes([0x01]) + body.serialize())
+        self._send(0x34, 0x01, message, True)
+
+    def _calendar_file(self, data):
+        flag = struct.unpack(">I", data[:4])[0]
+        pos, documents = 4, []
+        while pos < len(data):
+            size = struct.unpack(">I", data[pos:pos + 4])[0]
+            documents.append(json.loads(data[pos + 4:pos + 4 + size].decode("utf-8")))
+            pos += 4 + size
+        self.calendar_files.append({"full": flag == 0, "documents": documents})
+        if flag == 0:
+            self.calendar_events = {}
+        for doc in documents:
+            for event in doc["scheduleList"]:
+                if event["operation"] == 2:
+                    self.calendar_events.pop(event["event_uuid"], None)
+                else:
+                    self.calendar_events[event["event_uuid"]] = event
+            self.calendar_major = doc["major"]
+            if not self.calendar_keeps_minor:
+                self.calendar_minor = doc["minor"]
+
     def _service(self, pkt):
         s, c, t = pkt.service, pkt.command, pkt.tlv
+        if s == 0x34:
+            return self._p2p(t)
         if s == 0x07:
             return self._fitness(c, t)
         if s == 0x2C:
@@ -332,7 +402,8 @@ class FakeWatch:
             return self._send(s, c, TLV().put_byte(0x01, 87), True)
         if (s, c) == (0x01, 0x02):
             from watchbridge.huawei.commands import KNOWN_SUPPORTED_SERVICES
-            bitmap = bytes(1 if x in (0x02, 0x07, 0x0B, 0x0C, 0x0F, 0x20, 0x27) else 0 for x in KNOWN_SUPPORTED_SERVICES)
+            bitmap = bytes(1 if x in (0x02, 0x07, 0x0B, 0x0C, 0x0F, 0x20, 0x27, 0x34) else 0
+                           for x in KNOWN_SUPPORTED_SERVICES)
             return self._send(s, c, TLV().put(0x02, bitmap), True)
         if (s, c) == (0x01, 0x03):
             out = TLV()
@@ -344,7 +415,8 @@ class FakeWatch:
             return self._send(s, c, TLV().put(0x81, out), True)
         if (s, c) == (0x01, 0x37):
             caps = bytearray(32)
-            for bit in (0x2F, 74, 77, 94, 120, 143):  # 74: "call started"; 143: TruSleep as sequence data
+            # 74: "call started"; 143: TruSleep as sequence data; 171: calendar over P2P
+            for bit in (0x2F, 74, 77, 94, 120, 143, 171):
                 caps[bit // 8] |= 1 << (bit % 8)
             return self._send(s, c, TLV().put(0x01, bytes(caps)), True)
         if (s, c) == (0x02, 0x02):

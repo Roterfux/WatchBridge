@@ -23,7 +23,7 @@ for m in GetStatus GetSettings GetDevices StartScan StopScan Connect Disconnect 
          RefreshWeather SyncTime StopFindPhone "SetSettings '{\"weather\":{\"fahrenheit\":true}}'" \
          SyncHealth "GetHealth ''" "GetHealth '2026-11-04'" "GetHealth 'not-a-date'" \
          "SetSettings '{\"health\":{\"interval_hours\":3}}'" \
-         "InspectWatchface '/nonexistent.hwt'" RefreshWatchfaces \
+         "InspectWatchface '/nonexistent.hwt'" RefreshWatchfaces SyncCalendar \
          "Forget false" "Pair 'AA:BB:CC:DD:EE:FF' 'HUAWEI WATCH GT 5'"; do
     out=$(eval call $m)
     echo "$m -> $out"

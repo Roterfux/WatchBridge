@@ -23,7 +23,9 @@ October and November 2026.
 | `huawei/filedownload.py` | `devices/huawei/packets/FileDownloadService2C.java`, `service/devices/huawei/HuaweiFileDownloadManager.java`, `service/devices/huawei/requests/GetFileDownloadInitRequest.java`, `GetFileInfoRequest.java`, `GetFileBlockRequest.java`, `GetFileDownloadCompleteRequest.java` | © 2024 Martin.JM |
 | `huawei/watchface.py` | `devices/huawei/packets/Watchface.java`, `FileUpload.java`, `devices/huawei/HuaweiPacket.java` (`serializeFileChunk`), `service/devices/huawei/HuaweiWatchfaceManager.java`, `HuaweiUploadManager.java`, `HuaweiFwHelper.java`, `AsynchronousResponse.java` (`handleFileUpload`, `handleWatchface`), `requests/SendFileUpload*.java`, `SendWatchface*.java`, `GetWatchface*.java` | © 2024 Vitalii Tomin, Damien Gaignon, Martin.JM |
 | `huawei/healthfiles.py` | `devices/huawei/HuaweiSequenceDataFileParser.java`, `HuaweiSequenceDataParserBase.java`, `HuaweiTrueSleepSequenceDataParser.java`, `HuaweiStressParser.java`, `HuaweiSleepSessionProvider.kt` | © 2025 Me7c7 and Gadgetbridge contributors |
-| `huawei/device.py` | `service/devices/huawei/HuaweiSupportProvider.java`, `AsynchronousResponse.java`, `HuaweiWeatherManager.java`, `requests/*` (incl. `onSetCallState` and `handleCallControls` for calls) | © 2024 Damien Gaignon, Martin.JM, Vitalii Tomin |
+| `huawei/p2p.py` | `devices/huawei/packets/P2P.java`, `service/devices/huawei/HuaweiP2PManager.java`, `p2p/HuaweiBaseP2PService.java`, `requests/SendP2PCommand.java` | © 2024–2025 Me7c7, José Rebelo |
+| `huawei/p2pcalendar.py` | `service/devices/huawei/p2p/HuaweiP2PCalendarService.java` | © 2024 Me7c7 |
+| `huawei/device.py` | `service/devices/huawei/HuaweiSupportProvider.java`, `AsynchronousResponse.java`, `HuaweiWeatherManager.java`, `requests/*` (incl. `onSetCallState` and `handleCallControls` for calls), `p2p/HuaweiP2PCalendarService.java` and `p2p/HuaweiBaseP2PService.java` (calendar exchange) | © 2024 Damien Gaignon, Martin.JM, Me7c7, Vitalii Tomin |
 
 Gadgetbridge source paths are relative to `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/`.
 
