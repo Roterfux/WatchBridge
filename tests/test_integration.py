@@ -90,6 +90,19 @@ class TestNotificationFilter(unittest.TestCase):
         mon._filter(None, Msg.closed(12345, 3))            # never forwarded
         self.assertEqual([n.app_name for n in closed], ["Mail"])
 
+    def test_missed_call_followed_even_when_not_forwarded(self):
+        forwarded, closed, missed = [], [], []
+        mon = NotificationMonitor(forwarded.append, on_closed=closed.append,
+                                  on_missed_call=lambda n, active: missed.append((n.summary, active)))
+        mon.mode = "selected"  # empty allow-list: nothing goes to the watch
+        mon._filter(None, Msg.notify("Phone", "Alice Example", "Missed call", category="x-nemo.call.missed",
+                                     sender=":1.70", serial=11))
+        mon._filter(None, Msg.reply(":1.70", 11, 950))
+        mon._filter(None, Msg.closed(950, 3))  # the user looked at the call history
+        self.assertEqual(forwarded, [])
+        self.assertEqual(closed, [])
+        self.assertEqual(missed, [("Alice Example", True), ("Alice Example", False)])
+
 
 class Msg:
     """Just enough of dbus.lowlevel.Message for NotificationMonitor._filter."""

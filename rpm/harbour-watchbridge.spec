@@ -3,7 +3,7 @@
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
 Version:    0.4.0
-Release:    4
+Release:    8
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -98,6 +98,21 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-8
+- Main page: firmware version without the build suffix in brackets
+
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-7
+- Cover: no battery number inside the watch dial (the status line has it), no sleep score
+  and no time next to the heart rate
+
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-6
+- Cover: the latest missed call with the caller's name, from Sailfish's missed-call
+  notification; it disappears when the missed calls are cleared on the phone
+
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-5
+- Cover: battery in percent, today's steps, last night's sleep with its score and the
+  latest heart-rate reading (from the last health sync), plus a "sync health" action
+
 * Thu Nov 05 2026 WatchBridge contributors - 0.4.0-4
 - Notifications dismissed on the phone, or closed by their app (e.g. the message was read),
   are removed from the watch as well; switch in the settings
