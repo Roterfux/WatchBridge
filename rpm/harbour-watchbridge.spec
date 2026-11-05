@@ -3,7 +3,7 @@
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
 Version:    0.5.0
-Release:    2
+Release:    4
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -99,6 +99,12 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Thu Nov 05 2026 WatchBridge contributors - 0.5.0-4
+- Main page: the "Sync time" and "Reconnect" buttons moved to the bottom of the page
+
+* Thu Nov 05 2026 WatchBridge contributors - 0.5.0-3
+- About page: link to the source code on GitHub
+
 * Thu Nov 05 2026 WatchBridge contributors - 0.5.0-2
 - Watch faces are registered under a face-format version the watch supports (the oldest
   it lists, 2.1 on a GT 5) instead of 1.0.0; a face sent as 1.0.0 showed up garbled and
