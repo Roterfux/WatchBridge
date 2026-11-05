@@ -3,7 +3,7 @@
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
 Version:    0.6.0
-Release:    1
+Release:    2
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -99,6 +99,9 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Thu Nov 05 2026 WatchBridge contributors - 0.6.0-2
+- The "Sync time" and "Reconnect" buttons moved from the main page to the settings (Connection)
+
 * Thu Nov 05 2026 WatchBridge contributors - 0.6.0-1
 - Calendar: the phone's events appear in the calendar app on the watch, for as many days as
   the watch asks for (35 on a GT 5), recurring events included. Sent after connecting and,
