@@ -89,6 +89,13 @@ class TestContactHelper(unittest.TestCase):
                              [["+43 664 1234567", "Alice Example"], ["0699 7654321", "Bob Builder"]])
 
 
+    def test_missing_database_says_so(self):
+        helper = load_helper()
+        with self.assertRaises(OSError) as cm:
+            helper.read_contacts(os.path.join(tempfile.gettempdir(), "no-such-dir", "contacts.db"))
+        self.assertIn("no access", str(cm.exception))
+
+
 class TestContactNames(unittest.TestCase):
     def test_number_key(self):
         self.assertEqual(number_key("+43 664 1234567"), number_key("0043 664 1234567"))
@@ -113,6 +120,21 @@ class TestContactNames(unittest.TestCase):
         self.assertEqual(names.state, "failed")
         self.assertIn("denied", names.error)
         self.assertIsNone(names.lookup("+43 664 1234567"))
+
+    def test_helper_command_matches_desktop_exec(self):
+        # sailjail refuses a command that differs from the profile's Exec line, and it
+        # only starts ELF binaries (0.4.0-1 failed on both)
+        from watchbridge.contacts import HELPER
+        path = os.path.join(HERE, "..", "data", "harbour-watchbridge-contacts.desktop")
+        with open(path, encoding="utf-8") as f:
+            exec_line = [l.strip()[5:] for l in f if l.startswith("Exec=")][0]
+        self.assertEqual(exec_line.split(), HELPER)
+        self.assertEqual(HELPER[3], "/usr/bin/python3")
+        # "Contacts" alone does not open the privileged storage (0.4.0-2: "can't chdir to privileged")
+        with open(path, encoding="utf-8") as f:
+            perms = [l.strip()[12:] for l in f if l.startswith("Permissions=")][0].split(";")
+        self.assertIn("Contacts", perms)
+        self.assertIn("Privileged", perms)
 
     def test_missing_helper(self):
         names = ContactNames(["/nonexistent/contact-names"], run_async=False)

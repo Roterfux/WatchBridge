@@ -4,7 +4,7 @@
 """Print the phone numbers and display names from the Sailfish contacts as JSON.
 
 Sailfish keeps the contacts in privileged storage that the WatchBridge service cannot
-read. This helper is started through sailjail with the Contacts permission
+read. This helper is started through sailjail with the Contacts and Privileged permissions
 (harbour-watchbridge-contacts.desktop), so Sailfish asks the user once. It only reads,
 and it writes nothing but its output: {"contacts": [[number, name], ...]}.
 The service keeps the result in memory to name callers on the watch.
@@ -29,23 +29,32 @@ LEFT JOIN Names n ON n.contactId = p.contactId
 """
 
 
-def _open(path):
+def _query(uri):
+    con = sqlite3.connect(uri, uri=True)
     try:
-        return sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+        try:
+            return con.execute(QUERY + " WHERE c.deleted IS NULL").fetchall()
+        except sqlite3.OperationalError as e:
+            if "deleted" not in str(e):
+                raise
+            return con.execute(QUERY).fetchall()  # older schema without the deleted column
+    finally:
+        con.close()
+
+
+def _rows(path):
+    if not os.path.exists(path):
+        raise OSError("%s not found (no access to the Contacts storage?)" % path)
+    try:
+        return _query("file:%s?mode=ro" % path)
     except sqlite3.OperationalError:
-        # Read-only opening can fail on a WAL database whose -shm file is missing
-        return sqlite3.connect("file:%s?immutable=1" % path, uri=True)
+        # Read-only opening fails on a WAL database when the -shm file cannot be created;
+        # SQLite only reports it at the first query, not at connect()
+        return _query("file:%s?immutable=1" % path)
 
 
 def read_contacts(path):
-    con = _open(path)
-    try:
-        try:
-            rows = con.execute(QUERY + " WHERE c.deleted IS NULL").fetchall()
-        except sqlite3.OperationalError:  # older schema without the deleted column
-            rows = con.execute(QUERY).fetchall()
-    finally:
-        con.close()
+    rows = _rows(path)
     seen = set()
     out = []
     for number, label, first, last in rows:

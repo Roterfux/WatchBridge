@@ -15,8 +15,10 @@ import threading
 
 log = logging.getLogger(__name__)
 
+# Must match the Exec line of harbour-watchbridge-contacts.desktop exactly: sailjail compares
+# them, and it only starts ELF binaries, so the script is run by python3, not directly.
 HELPER = ["/usr/bin/sailjail", "-p", "harbour-watchbridge-contacts.desktop",
-          "/usr/libexec/harbour-watchbridge/contact-names"]
+          "/usr/bin/python3", "/usr/libexec/harbour-watchbridge/contact-names"]
 # Long enough for the user to answer Sailfish's permission prompt the first time
 HELPER_TIMEOUT = 180
 
@@ -91,8 +93,9 @@ class ContactNames:
             raise RuntimeError("No answer to the Contacts permission request")
         if proc.returncode != 0:
             lines = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+            # sailjail logs its own refusals to the system log, not to stderr
             raise RuntimeError("The contact helper failed (%d): %s"
-                               % (proc.returncode, lines[-1] if lines else "no details"))
+                               % (proc.returncode, lines[-1] if lines else "sailjail refused to start it"))
         data = json.loads(proc.stdout.decode("utf-8"))
         names = {}
         for number, name in data.get("contacts", []):

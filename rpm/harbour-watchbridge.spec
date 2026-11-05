@@ -3,7 +3,7 @@
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
 Version:    0.4.0
-Release:    1
+Release:    3
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -98,6 +98,16 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-3
+- Caller names: ask for the Privileged permission too; Contacts alone does not open the
+  contacts storage ("unable to open database file")
+- Contact helper: the read-only fallback now really applies, and a missing database is
+  reported as missing access
+
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-2
+- Caller names: start the contact helper through python3, since sailjail only starts
+  binaries listed in the profile's Exec line (0.4.0-1 failed with "no details")
+
 * Thu Nov 05 2026 WatchBridge contributors - 0.4.0-1
 - Incoming calls on the watch: caller name or number, reject (or answer) on the watch,
   the call screen closes when the call is answered or ends on the phone
