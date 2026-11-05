@@ -157,7 +157,8 @@ class Service(dbus.service.Object):
         self._pairing = False
         self._bluez = Bluez(system_bus, on_devices=self._devices_changed, on_connection=self._on_rfcomm,
                             on_device_connected=self._bt_device_connected)
-        self._notifications = NotificationMonitor(self._on_notification, on_app_seen=self._on_app_seen)
+        self._notifications = NotificationMonitor(self._on_notification, on_app_seen=self._on_app_seen,
+                                                  on_closed=self._on_notification_closed)
         self._apply_notification_settings()
         self._notifications.start()
         try:
@@ -539,10 +540,17 @@ class Service(dbus.service.Object):
             return
         log.info("Forwarding notification from %s", n.app_name)
         self.watch.send_notification(n.summary or n.app_name, n.body, sender=n.app_name, app_id=n.package,
-                                     kind=n.kind, key="%s:%d:%s" % (n.app_name, n.replaces_id, n.summary))
+                                     kind=n.kind, key=n.watch_key)
         self.forwarded += 1
         self.last_notification = n.to_dict()
         self._emit_status()
+
+    def _on_notification_closed(self, n):
+        notif = self.config.data["notifications"]
+        if not notif["enabled"] or not notif.get("remove_dismissed", True) or not self._ready():
+            return
+        log.info("Removing a notification from %s from the watch (closed on the phone)", n.app_name)
+        self.watch.remove_notification(n.watch_key, app_id=n.package, kind=n.kind)
 
     # ================================================================= health
     def _open_health_store(self):

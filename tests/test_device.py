@@ -101,6 +101,17 @@ class TestDevice(unittest.TestCase):
         self.assertEqual(n.get_string(0x11), "org.sailfishos.messages")
         self.assertTrue(n.contains(0x15) and n.contains(0x19))  # timestamp / repeat-notify caps
 
+        # Dismissed on the phone: the removal must name the same key, id and channel
+        self.assertTrue(dev.supports_notification_remove())
+        dev.remove_notification("n1", app_id="org.sailfishos.messages")
+        self.assertTrue(wait_for(lambda: [p for p in watch.received if (p.service, p.command) == (0x02, 0x06)]))
+        rm = [p for p in watch.received if (p.service, p.command) == (0x02, 0x06)][0].tlv
+        self.assertEqual(rm.get_string(0x03), n.get_string(0x19))
+        self.assertEqual(rm.get_int(0x04), n.get_int(0x1A))
+        self.assertEqual(rm.get_string(0x05), n.get_string(0x1B))
+        self.assertEqual(rm.get_string(0x02), "org.sailfishos.messages")
+        self.assertEqual(rm.get_byte(0x01), 0x7F)
+
         report = weather.parse_open_meteo(SAMPLE, "Helsinki", now=1761800000)
         dev.send_weather(report)
         self.assertTrue(wait_for(lambda: watch.forecasts))

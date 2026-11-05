@@ -64,26 +64,82 @@ class TestNotificationFilter(unittest.TestCase):
         mon = NotificationMonitor(forwarded.append, on_app_seen=lambda a, p: seen.append((a, p)))
         mon.mode = "selected"
 
-        class Msg:
-            def __init__(self, app):
-                self.args = [app, 0, "", "Bob", "Hi", [], {"category": "x-nemo.email"}, -1]
-
-            def get_member(self):
-                return "Notify"
-
-            def get_interface(self):
-                return "org.freedesktop.Notifications"
-
-            def get_signature(self):
-                return "susssasa{sv}i"
-
-            def get_args_list(self):
-                return self.args
-
-        mon._filter(None, Msg("Email"))
-        mon._filter(None, Msg("WatchBridge"))
+        mon._filter(None, Msg.notify("Email", category="x-nemo.email"))
+        mon._filter(None, Msg.notify("WatchBridge", category="x-nemo.email"))
         self.assertEqual(seen, [("Email", "com.android.email")])
         self.assertEqual(forwarded, [])
+
+    def test_dismissed_on_phone_is_reported(self):
+        forwarded, closed = [], []
+        mon = NotificationMonitor(forwarded.append, on_closed=closed.append)
+        mon._filter(None, Msg.notify("Messages", "Bob", "Hi", sender=":1.50", serial=7))
+        mon._filter(None, Msg.reply(":1.99", 7, 1))       # someone else's answer: ignored
+        mon._filter(None, Msg.reply(":1.50", 7, 904))      # lipstick: notification id 904
+        first = forwarded[0]
+        self.assertEqual(first.phone_id, 904)
+        # An update of 904 keeps its watch key, so the watch replaces it
+        mon._filter(None, Msg.notify("Messages", "Bob", "Hi again", replaces=904, sender=":1.50", serial=8))
+        mon._filter(None, Msg.reply(":1.50", 8, 904))
+        self.assertEqual(forwarded[1].watch_key, first.watch_key)
+        mon._filter(None, Msg.closed(904, 1))              # banner expired: stays on the watch
+        self.assertEqual(closed, [])
+        mon._filter(None, Msg.notify("Mail", "Ann", "Re:", sender=":1.60", serial=3))
+        mon._filter(None, Msg.reply(":1.60", 3, 905))
+        mon._filter(None, Msg.closed(905, 2))              # dismissed by the user
+        mon._filter(None, Msg.closed(905, 2))              # repeated: reported once
+        mon._filter(None, Msg.closed(12345, 3))            # never forwarded
+        self.assertEqual([n.app_name for n in closed], ["Mail"])
+
+
+class Msg:
+    """Just enough of dbus.lowlevel.Message for NotificationMonitor._filter."""
+
+    def __init__(self, mtype, member="", args=(), sender=":1.1", serial=1, destination=None, reply_serial=None,
+                 signature=""):
+        self.mtype, self.member, self.args = mtype, member, list(args)
+        self.sender, self.serial, self.destination, self.reply_serial = sender, serial, destination, reply_serial
+        self.signature = signature
+
+    @classmethod
+    def notify(cls, app, summary="Bob", body="Hi", category="", replaces=0, sender=":1.1", serial=1):
+        hints = {"category": category} if category else {}
+        return cls(1, "Notify", [app, replaces, "", summary, body, [], hints, -1], sender, serial,
+                   signature="susssasa{sv}i")
+
+    @classmethod
+    def reply(cls, destination, reply_serial, nid):
+        return cls(2, args=[nid], destination=destination, reply_serial=reply_serial)
+
+    @classmethod
+    def closed(cls, nid, reason):
+        return cls(4, "NotificationClosed", [nid, reason])
+
+    def get_type(self):
+        return self.mtype
+
+    def get_member(self):
+        return self.member
+
+    def get_interface(self):
+        return "org.freedesktop.Notifications" if self.member else None
+
+    def get_signature(self):
+        return self.signature
+
+    def get_args_list(self):
+        return self.args
+
+    def get_sender(self):
+        return self.sender
+
+    def get_serial(self):
+        return self.serial
+
+    def get_destination(self):
+        return self.destination
+
+    def get_reply_serial(self):
+        return self.reply_serial
 
 
 class TestConfig(unittest.TestCase):

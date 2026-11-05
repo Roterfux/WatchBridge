@@ -62,6 +62,11 @@ class WatchError(Exception):
     pass
 
 
+def _notification_id(key):
+    """The notification id sent with a notification and with its removal (Huawei tag 0x1A)."""
+    return zlib.crc32(key.encode("utf-8")) & 0x7FFFFFFF if key else 0
+
+
 class Listener:
     """Callbacks from the watch. Invoked from worker threads."""
 
@@ -200,6 +205,10 @@ class HuaweiWatch:
 
     def send_notification(self, title, body, sender="", app_id="", kind=C.NotificationType.GENERIC, key=None):
         self.submit(lambda: self._send_notification(title, body, sender, app_id, kind, key))
+
+    def remove_notification(self, key, app_id="", kind=C.NotificationType.GENERIC):
+        """Takes a notification sent with send_notification(key=key) off the watch."""
+        self.submit(lambda: self._remove_notification(key, app_id, kind))
 
     def send_weather(self, report):
         self.submit(lambda: self._send_weather(report))
@@ -818,13 +827,24 @@ class HuaweiWatch:
             "supports_remove_single": self.supports_expand(120),
             "supports_timestamp": self.supports_expand(77),
             "key": key or "",
-            "id": zlib.crc32(key.encode("utf-8")) & 0x7FFFFFFF if key else 0,
+            "id": _notification_id(key),
             "channel_id": "",
             "when": int(time.time() * 1000),
         }
         packet = C.notification(self._next_msg_id(), kind, title, sender or title, body, app_id,
                                 cons.get("content_format", 0x02), params)
         self.request(packet, 3.0)
+
+    def supports_notification_remove(self):
+        # HuaweiNotificationsManager.onDeleteNotification
+        return self.supports(0x02, NC.REMOVE) and (self.supports_expand(94) or self.supports_expand(120))
+
+    def _remove_notification(self, key, app_id, kind):
+        if not self.is_ready() or not self.supports_notification_remove():
+            log.info("Notification not removed from the watch (not connected or unsupported)")
+            return
+        # Key, id and channel must be the ones the notification was sent with
+        self.request(C.notification_remove(kind, app_id or "", key, _notification_id(key), ""), 3.0)
 
     # ------------------------------------------------------------------ weather
     def _send_weather(self, report):

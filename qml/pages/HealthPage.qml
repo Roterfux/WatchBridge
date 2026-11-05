@@ -35,8 +35,11 @@ Page {
         return out
     }
 
+    // Shared by "awake" in the sleep chart and the heart-rate line
+    readonly property string alertColor: "#ff6b5e"
+
     function stageColor(stage) {
-        return stage === "awake" ? "#ff6b5e"
+        return stage === "awake" ? alertColor
              : stage === "deep" ? Theme.highlightColor
              : stage === "rem" ? Theme.rgba(Theme.highlightColor, 0.7)
              : Theme.rgba(Theme.highlightColor, 0.4)
@@ -225,8 +228,11 @@ Page {
                     page.drawGrid(ctx, width, height, page.dayTicks)
                     if (points.length === 0) return
                     var lo = h.heartRateMin - 5, hi = h.heartRateMax + 5
-                    ctx.strokeStyle = "#ff6b5e"
-                    ctx.lineWidth = Math.max(2, Theme.paddingSmall / 3)
+                    ctx.strokeStyle = page.alertColor
+                    // A thin anti-aliased line looks darker than the same colour as a block
+                    ctx.lineWidth = Math.max(3, Theme.paddingSmall / 2)
+                    ctx.lineJoin = "round"
+                    ctx.lineCap = "round"
                     ctx.beginPath()
                     for (var i = 0; i < points.length; i++) {
                         var x = width * points[i][0] / 86400

@@ -12,6 +12,7 @@ The watch protocol is a Python port of the Huawei support in
 - **Notification sync:** phone notifications (native apps and Android App Support apps) are forwarded to the
   watch. Forward everything except muted apps, or only the apps you select. Apps are picked from a list of
   apps that recently sent notifications. You can also choose whether system messages are included.
+  Notifications you dismiss on the phone, or messages you read there, disappear from the watch too.
 - **Incoming calls:** the watch shows the caller's name (or number) and can reject the call. The call screen
   closes when you answer or the call ends. Names come from Sailfish Contacts through a small sandboxed helper
   (Sailfish asks once for the Contacts permission); they're kept in memory only.

@@ -60,6 +60,13 @@ Page {
                 automaticCheck: false
                 onClicked: daemon.updateSettings({ "notifications": { "include_system": !checked } })
             }
+            TextSwitch {
+                text: qsTr("Remove from the watch when cleared on the phone")
+                description: qsTr("When you dismiss a notification on the phone, or read the message in its app, it also disappears from the watch.")
+                checked: n.remove_dismissed !== false
+                automaticCheck: false
+                onClicked: daemon.updateSettings({ "notifications": { "remove_dismissed": !checked } })
+            }
             ComboBox {
                 label: qsTr("Forward from")
                 currentIndex: n.mode === "selected" ? 1 : 0

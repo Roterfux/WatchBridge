@@ -27,6 +27,7 @@ DEFAULTS = {
         "blocked_apps": [],
         "allowed_apps": [],
         "include_system": False,
+        "remove_dismissed": True,  # take notifications off the watch when they go away on the phone
         # Apps that sent notifications recently, offered in the app lists:
         # {app_name: {"package": str, "last": unix time}}. Maintained by the daemon.
         "seen_apps": {},

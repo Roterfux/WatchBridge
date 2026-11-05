@@ -3,7 +3,7 @@
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
 Version:    0.4.0
-Release:    3
+Release:    4
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -98,6 +98,12 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-4
+- Notifications dismissed on the phone, or closed by their app (e.g. the message was read),
+  are removed from the watch as well; switch in the settings
+- An updated notification replaces the old one on the watch instead of appearing twice
+- Health page: heart-rate line in exactly the "awake" colour, drawn thicker
+
 * Thu Nov 05 2026 WatchBridge contributors - 0.4.0-3
 - Caller names: ask for the Privileged permission too; Contacts alone does not open the
   contacts storage ("unable to open database file")

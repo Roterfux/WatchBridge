@@ -9,6 +9,7 @@ originating Android package in the x-nemo-origin-package hint, which lets
 the watch show the matching app icon.
 """
 
+import collections
 import logging
 import time
 
@@ -18,6 +19,25 @@ import dbus.bus
 log = logging.getLogger(__name__)
 
 MATCH = "type='method_call',interface='org.freedesktop.Notifications',member='Notify'"
+# Lipstick's answer to Notify carries the notification id, and NotificationClosed(id, reason)
+# names only that id; both are needed to take a dismissed notification off the watch.
+# (A well-known sender name matches whichever connection owns it, as verified on Sailfish 5.2.)
+MATCH_REPLIES = "type='method_return',sender='org.freedesktop.Notifications'"
+MATCH_CLOSED = "type='signal',interface='org.freedesktop.Notifications',member='NotificationClosed'"
+MATCH_RULES = [MATCH, MATCH_REPLIES, MATCH_CLOSED]
+
+# D-Bus message types (dbus.lowlevel.MESSAGE_TYPE_*)
+_METHOD_CALL = 1
+_METHOD_RETURN = 2
+_SIGNAL = 4
+
+# NotificationClosed reasons; an expired banner is not a reason to remove it from the watch
+CLOSED_EXPIRED = 1
+CLOSED_DISMISSED = 2
+CLOSED_BY_APP = 3
+
+_PENDING_MAX_AGE = 30      # seconds to wait for lipstick's answer to a Notify call
+_KNOWN_MAX = 300           # forwarded notifications remembered by id
 
 # Categories that are device status chatter rather than messages
 _SYSTEM_CATEGORY_PREFIXES = (
@@ -43,6 +63,10 @@ class Notification:
         self.body = body
         self.hints = hints
         self.replaces_id = replaces_id
+        # Identifies the notification on the watch; an update (replaces_id) keeps the key
+        # of the notification it replaces, so the watch shows it in place of the old one
+        self.watch_key = "%s:%d:%s" % (app_name, replaces_id, summary)
+        self.phone_id = None  # lipstick's id, from its answer to Notify
 
     @property
     def category(self):
@@ -83,8 +107,11 @@ MODE_SELECTED = "selected"  # only allowed_apps
 
 
 class NotificationMonitor:
-    def __init__(self, on_notification, own_app_name="WatchBridge", on_app_seen=None):
+    def __init__(self, on_notification, own_app_name="WatchBridge", on_app_seen=None, on_closed=None):
         self.on_notification = on_notification
+        # Called with the forwarded Notification when it is dismissed on the phone or
+        # closed by its app (e.g. the message was read)
+        self.on_closed = on_closed or (lambda n: None)
         # Called with (app_name, package) for every app that sends a notification,
         # filtered or not, so the settings can offer it in the app lists
         self.on_app_seen = on_app_seen or (lambda app_name, package: None)
@@ -94,6 +121,8 @@ class NotificationMonitor:
         self.allowed_apps = set()
         self.include_system = False
         self._recent = {}
+        self._pending = {}                 # (sender, serial) of a forwarded Notify -> (Notification, time)
+        self._known = collections.OrderedDict()  # lipstick id -> forwarded Notification
         self._bus = None
 
     def start(self):
@@ -102,15 +131,24 @@ class NotificationMonitor:
         try:
             monitoring = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
                                         "org.freedesktop.DBus.Monitoring")
-            monitoring.BecomeMonitor([MATCH], dbus.UInt32(0))
+            monitoring.BecomeMonitor(MATCH_RULES, dbus.UInt32(0))
             log.info("Monitoring notifications (BecomeMonitor)")
         except dbus.DBusException as e:
             log.warning("BecomeMonitor failed (%s), falling back to eavesdropping", e)
-            bus.add_match_string(MATCH + ",eavesdrop='true'")
+            for rule in MATCH_RULES:
+                bus.add_match_string(rule + ",eavesdrop='true'")
         self._bus = bus
 
     def _filter(self, bus, message):
         try:
+            mtype = message.get_type()
+            if mtype == _METHOD_RETURN:
+                self._on_return(message)
+                return
+            if mtype == _SIGNAL:
+                if message.get_member() == "NotificationClosed":
+                    self._on_closed_signal(message.get_args_list())
+                return
             if message.get_member() != "Notify" or message.get_interface() != "org.freedesktop.Notifications":
                 return
             args = message.get_args_list()
@@ -128,9 +166,44 @@ class NotificationMonitor:
             accepted = self._accept(n)
             log.debug("Notification from %r (%s): %s", n.app_name, n.category, "forward" if accepted else "skip")
             if accepted:
+                previous = self._known.get(n.replaces_id) if n.replaces_id else None
+                if previous is not None:
+                    n.watch_key = previous.watch_key
+                self._remember_call(message, n)
                 self.on_notification(n)
         except Exception:  # noqa: BLE001 - never let the filter raise into libdbus
             log.exception("Notification filter error")
+
+    # ------------------------------------------------------- closed on the phone
+    def _remember_call(self, message, n):
+        now = time.time()
+        self._pending = {k: v for k, v in self._pending.items() if now - v[1] < _PENDING_MAX_AGE}
+        self._pending[(message.get_sender(), message.get_serial())] = (n, now)
+
+    def _on_return(self, message):
+        entry = self._pending.pop((message.get_destination(), message.get_reply_serial()), None)
+        if entry is None:
+            return  # an answer to something else
+        args = message.get_args_list()
+        if not args:
+            return
+        n = entry[0]
+        n.phone_id = int(args[0])
+        self._known.pop(n.phone_id, None)
+        self._known[n.phone_id] = n
+        while len(self._known) > _KNOWN_MAX:
+            self._known.popitem(last=False)
+
+    def _on_closed_signal(self, args):
+        if len(args) < 2:
+            return
+        n = self._known.pop(int(args[0]), None)
+        reason = int(args[1])
+        if n is None:
+            return
+        log.debug("Notification %d from %r closed (reason %d)", n.phone_id, n.app_name, reason)
+        if reason in (CLOSED_DISMISSED, CLOSED_BY_APP):
+            self.on_closed(n)
 
     def _accept(self, n):
         if not n.summary and not n.body:
