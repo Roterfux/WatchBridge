@@ -13,9 +13,10 @@ call() {
         --method harbour.watchbridge.Daemon."$@" 2>&1 | cut -c1-160
 }
 
-for i in 1 2 3 4 5 6 7 8 9 10; do
+# Wait for the bus name ("call" always exits 0 because of the pipe, so look at its output)
+for i in $(seq 1 30); do
     sleep 0.5
-    call GetStatus >/dev/null && break
+    case "$(call GetStatus)" in *Error*|"") ;; *) break ;; esac
 done
 FAIL=0
 for m in GetStatus GetSettings GetDevices StartScan StopScan Connect Disconnect SendTestNotification \

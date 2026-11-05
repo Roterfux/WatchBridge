@@ -2,7 +2,7 @@
 
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
-Version:    0.2.0
+Version:    0.4.0
 Release:    1
 License:    AGPLv3+
 BuildArch:  noarch
@@ -24,14 +24,15 @@ Requires:   systemd
 %description
 WatchBridge connects a Huawei Watch GT 5 (and GT 5 Pro) to Sailfish OS.
 It pairs with the watch using the HiChain protocol, forwards phone
-notifications and pushes the weather forecast from Open-Meteo.
+notifications and incoming calls, pushes the weather forecast from
+Open-Meteo and syncs health data back to the phone.
 The watch protocol is ported from Gadgetbridge.
 
 %prep
 %setup -q -n %{name}-%{version}
 # Sources may come from a filesystem without Unix modes (e.g. a Windows drive)
 find . -type f -exec chmod 0644 {} +
-chmod 0755 data/harbour-watchbridge-daemon tools/*.sh
+chmod 0755 data/harbour-watchbridge-daemon data/contact-names tools/*.sh
 
 %build
 # Nothing to build: QML UI + Python daemon
@@ -57,6 +58,11 @@ install -D -m 0644 data/harbour-watchbridge.service %{buildroot}%{_userunitdir}/
 install -D -m 0644 data/harbour.watchbridge.service %{buildroot}%{_datadir}/dbus-1/services/harbour.watchbridge.service
 install -d %{buildroot}%{_userunitdir}/post-user-session.target.wants
 ln -s ../harbour-watchbridge.service %{buildroot}%{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
+
+# Caller names: a helper that sailjail starts with the Contacts permission
+install -D -m 0755 data/contact-names %{buildroot}%{_libexecdir}/%{name}/contact-names
+sed -i 's/\r$//' %{buildroot}%{_libexecdir}/%{name}/contact-names
+install -D -m 0644 data/%{name}-contacts.desktop %{buildroot}%{_datadir}/applications/%{name}-contacts.desktop
 
 install -D -m 0644 harbour-watchbridge.desktop %{buildroot}%{_datadir}/applications/%{name}.desktop
 for size in 86x86 108x108 128x128 172x172; do
@@ -84,12 +90,33 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_bindir}/harbour-watchbridge-daemon
 %{_datadir}/%{name}
 %{_datadir}/applications/%{name}.desktop
+%{_datadir}/applications/%{name}-contacts.desktop
+%{_libexecdir}/%{name}
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 %{_datadir}/dbus-1/services/harbour.watchbridge.service
 %{_userunitdir}/harbour-watchbridge.service
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Thu Nov 05 2026 WatchBridge contributors - 0.4.0-1
+- Incoming calls on the watch: caller name or number, reject (or answer) on the watch,
+  the call screen closes when the call is answered or ends on the phone
+- Caller names from Contacts through a small sandboxed helper; Sailfish asks once for the
+  Contacts permission. Names stay in memory only
+- New "Calls" section in the settings
+
+* Thu Nov 05 2026 WatchBridge contributors - 0.3.0-2
+- Health page: time axes and guide lines under the steps, heart-rate and sleep charts
+- Sleep chart: legend for awake, REM, light and deep sleep
+
+* Wed Nov 04 2026 WatchBridge contributors - 0.3.0-1
+- File download over service 0x2C, ported from Gadgetbridge
+- TruSleep: sleep stages (light, deep, REM, awake), sleep score, efficiency, time to fall
+  asleep and breathing rate; hypnogram on the health page
+- Stress measurements (needs automatic stress measurement on the watch)
+- New sleep-sessions.csv and stress.csv; daily.csv gains REM minutes, sleep score and stress
+- A failing health sync always reports back instead of staying in "syncing"
+
 * Wed Nov 04 2026 WatchBridge contributors - 0.2.0-1
 - Health sync: daily totals, per-minute steps and heart rate (SpO2 where recorded) and basic
   sleep from the watch, every few hours and on demand

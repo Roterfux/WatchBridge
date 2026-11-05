@@ -18,9 +18,11 @@ October and November 2026.
 | `huawei/tlv.py` | `devices/huawei/HuaweiTLV.java` | © 2024 Damien Gaignon, Martin.JM, Vitalii Tomin |
 | `huawei/crypto.py` | `devices/huawei/HuaweiCrypto.java`, `util/CryptoUtils.java` | © 2021–2024 Andreas Shimokawa, Damien Gaignon, José Rebelo, Martin.JM |
 | `huawei/hichain.py` | `service/devices/huawei/requests/GetHiChainRequest.java`, `devices/huawei/packets/DeviceConfig.java` (HiChain) | © 2024 Damien Gaignon, José Rebelo, Martin.JM |
-| `huawei/commands.py` | `devices/huawei/packets/DeviceConfig.java`, `Notifications.java`, `Weather.java`, `LocaleConfig.java`, `FindPhone.java`, `AccountRelated.java` | © 2024 Damien Gaignon, José Rebelo, Martin.JM, Vitalii Tomin |
+| `huawei/commands.py` | `devices/huawei/packets/DeviceConfig.java`, `Notifications.java`, `Weather.java`, `LocaleConfig.java`, `FindPhone.java`, `AccountRelated.java`, `Calls.java`; `service/devices/huawei/requests/SendNotificationRequest.java`, `StopNotificationRequest.java` (call notifications) | © 2024 Damien Gaignon, José Rebelo, Martin.JM, Vitalii Tomin |
 | `huawei/fitness.py` | `devices/huawei/packets/FitnessData.java`, `devices/huawei/HuaweiSampleProvider.java`, `service/devices/huawei/requests/GetFitnessTotalsRequest.java`, `GetStepDataCountRequest.java`, `GetStepDataRequest.java`, `GetSleepDataCountRequest.java`, `GetSleepDataRequest.java` | © 2024 Damien Gaignon, Martin.JM, Vitalii Tomin |
-| `huawei/device.py` | `service/devices/huawei/HuaweiSupportProvider.java`, `AsynchronousResponse.java`, `HuaweiWeatherManager.java`, `requests/*` | © 2024 Damien Gaignon, Martin.JM, Vitalii Tomin |
+| `huawei/filedownload.py` | `devices/huawei/packets/FileDownloadService2C.java`, `service/devices/huawei/HuaweiFileDownloadManager.java`, `service/devices/huawei/requests/GetFileDownloadInitRequest.java`, `GetFileInfoRequest.java`, `GetFileBlockRequest.java`, `GetFileDownloadCompleteRequest.java` | © 2024 Martin.JM |
+| `huawei/healthfiles.py` | `devices/huawei/HuaweiSequenceDataFileParser.java`, `HuaweiSequenceDataParserBase.java`, `HuaweiTrueSleepSequenceDataParser.java`, `HuaweiStressParser.java`, `HuaweiSleepSessionProvider.kt` | © 2025 Me7c7 and Gadgetbridge contributors |
+| `huawei/device.py` | `service/devices/huawei/HuaweiSupportProvider.java`, `AsynchronousResponse.java`, `HuaweiWeatherManager.java`, `requests/*` (incl. `onSetCallState` and `handleCallControls` for calls) | © 2024 Damien Gaignon, Martin.JM, Vitalii Tomin |
 
 Gadgetbridge source paths are relative to `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/`.
 

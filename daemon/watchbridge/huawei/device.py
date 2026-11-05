@@ -18,7 +18,10 @@ import time
 import zlib
 
 from . import commands as C
+from . import filedownload as FDL
 from . import fitness as F
+from . import healthfiles as HF
+from .filedownload import FD, SERVICE as FD_SERVICE
 from .commands import DC, NC, Service, WC
 from .crypto import HuaweiCrypto, generate_nonce, hexstr
 from .hichain import HiChain, HiChainError, OP_AUTH, OP_BIND
@@ -27,6 +30,11 @@ from .packet import Params, StreamParser
 log = logging.getLogger(__name__)
 
 INIT_TIMEOUT = 5.0
+FILE_TIMEOUT = 15.0  # answers to file download requests
+
+# Expand capabilities (HuaweiState.java)
+CAP_DICT_SLEEP_SYNC = 143   # sleep as a sequence-data file with stages and score
+CAP_BED_TIME = 199          # stages start at bed time instead of fall-asleep time
 # Gadgetbridge never times out the handshake requests before HiChain: the watch
 # may hold its answer until the user confirms the pairing on its screen.
 FIRST_AUTH_TIMEOUT = 90.0
@@ -74,6 +82,10 @@ class Listener:
 
     def on_health_data(self, result):
         """A health sync finished (or stopped early, see result["error"])."""
+        pass
+
+    def on_call_action(self, action):
+        """A button on the watch's call screen: C.CALL_ACTION_REJECT, C.CALL_ACTION_ACCEPT or an int."""
         pass
 
 
@@ -137,10 +149,13 @@ class HuaweiWatch:
         self.info = {}
         self.state = STATE_DISCONNECTED
         self._msg_id = 0
+        self._msg_id_lock = threading.Lock()
         self._waiter = None
         self._waiter_lock = threading.Lock()
         self._send_lock = threading.Lock()
         self._jobs = queue.Queue()
+        self._file_blocks = queue.Queue()   # 0x2C/0x05 data packets of a file download
+        self.rri_new_sync = False           # stress file via service 0x2C (SettingRelated)
         self._running = False
         self._in_setup = False
         self._threads = []
@@ -160,6 +175,7 @@ class HuaweiWatch:
     def stop(self):
         self._running = False
         self._jobs.put(None)
+        self._file_blocks.put(None)  # wake a download waiting for data
         # close() alone neither wakes the reader blocked in recv() nor releases
         # the RFCOMM channel (the next connect then fails with EBUSY)
         try:
@@ -188,6 +204,34 @@ class HuaweiWatch:
     def send_weather(self, report):
         self.submit(lambda: self._send_weather(report))
 
+    def send_incoming_call(self, name, number):
+        """Shows the call screen on the watch. Sent at once from the calling thread, not
+        queued: the worker may be busy with a health sync and a call cannot wait."""
+        if not self.is_ready() or not self.supports(0x02, NC.ACTION):
+            log.info("Call not shown on the watch (not connected or unsupported)")
+            return False
+        cons = self.notification_constraints
+        number_format = cons.get("incoming_number_format") if cons.get("incoming_number") else None
+        self._send_safely(C.call_notification(self._next_msg_id(), name or number, number,
+                                              cons.get("content_format", 0x02), number_format))
+        return True
+
+    def end_call(self, answered=False):
+        """Takes the call screen off the watch: answered on the phone, rejected or ended."""
+        if not self.is_ready() or not self.supports(0x02, NC.ACTION):
+            return
+        kind = C.NotificationType.STOP
+        if answered and self.supports_expand(74):
+            kind = C.NotificationType.START_CALL
+        self._send_safely(C.stop_call_notification(self._next_msg_id(), kind,
+                                                   self.notification_constraints.get("content_format", 0x02)))
+
+    def _send_safely(self, packet):
+        try:
+            self._send(packet)
+        except OSError as e:
+            log.warning("Could not send %02x/%02x: %s", packet.service, packet.command, e)
+
     def sync_time(self):
         self.submit(self._sync_time)
 
@@ -206,13 +250,16 @@ class HuaweiWatch:
                  "ok" if reply is not None and reply.tlv.get_as_int(0x7F, C.RESULT_SUCCESS) == C.RESULT_SUCCESS
                  else "no confirmation (%r)" % (reply.tlv if reply is not None else None))
 
-    def sync_health(self, step_start, sleep_start):
-        """Fetch totals, per-minute activity since step_start and sleep since sleep_start.
+    def sync_health(self, step_start, sleep_start, sleep_file_start=None, stress_start=None):
+        """Fetch totals, per-minute activity since step_start, basic sleep since sleep_start,
+        and the TruSleep and stress files since their own start times (None = skip).
 
         Runs one request per job, so notifications queued meanwhile are not held up
         by a long first sync. The result arrives via Listener.on_health_data.
         """
-        steps = self._health_steps(int(step_start), int(sleep_start))
+        steps = self._health_steps(int(step_start), int(sleep_start),
+                                   None if sleep_file_start is None else int(sleep_file_start),
+                                   None if stress_start is None else int(stress_start))
 
         def advance():
             try:
@@ -244,6 +291,7 @@ class HuaweiWatch:
         if self._running:
             self._running = False
             self._jobs.put(None)
+            self._file_blocks.put(None)
             self._fail_waiter()
             if not self._in_setup:
                 # During setup the connect sequence reports the failing step itself
@@ -261,6 +309,10 @@ class HuaweiWatch:
 
     def _dispatch(self, packet):
         key = (packet.service, packet.command)
+        if key == (FD_SERVICE, FD.BLOCK):
+            # File data arrives in bursts, not as an answer to a single request
+            self._file_blocks.put(packet)
+            return
         with self._waiter_lock:
             waiter = self._waiter
             if waiter is not None and waiter.key == key:
@@ -277,9 +329,11 @@ class HuaweiWatch:
             waiter.event.set()
 
     def _send(self, packet):
-        frames = packet.serialize(self.params)
         mtu = max(self.params.mtu, 20)
+        # Serialised under the lock too: call notifications are sent from the main
+        # thread while the worker may be sending, and encryption uses shared params
         with self._send_lock:
+            frames = packet.serialize(self.params)
             for frame in frames:
                 log.debug(">> %s", frame.hex())
                 for i in range(0, len(frame), mtu):
@@ -496,7 +550,11 @@ class HuaweiWatch:
         if self.supports(Service.ACCOUNT, C.AC.EXTENDED_ACCOUNT) and self.supports(Service.ACCOUNT, C.AC.ACCOUNT_SWITCH):
             self.request(C.extended_account(self.supports_expand(C.CAP_DIFF_ACCOUNT_PAIRING_OPTIMIZATION)), 2.0)
         if self.supports(0x01, DC.SETTING_RELATED):
-            self.request(C.setting_related(), 2.0)
+            reply = self.request(C.setting_related(), 2.0)
+            if reply is not None and reply.tlv.contains(0x02):
+                # Bits of tag 2: which files use the new (0x2C) download
+                self.rri_new_sync = bool(reply.tlv.get_byte(0x02) & 0x04)
+                log.info("Setting related: file support 0x%02x", reply.tlv.get_byte(0x02))
         if self.supports(0x01, DC.ACCEPT_AGREEMENT):
             self.request(C.accept_agreement(), 2.0)
         if self.supports_expand(C.CAP_REVERSE_CAPABILITIES):
@@ -563,13 +621,111 @@ class HuaweiWatch:
                 self.submit(lambda: self._send(C.weather_device_ack()))
         elif key == (Service.FIND_PHONE, 0x01):
             self.listener.on_find_phone(packet.tlv.get_bool(0x01, False))
+        elif key == (Service.CALLS, C.CALL_ANSWER):
+            action = C.parse_call_action(packet.tlv)
+            log.info("Call screen on the watch: %s", action)
+            self.listener.on_call_action(action)
+
+    # ---------------------------------------------------------- file download
+    def _download_file(self, name, file_type, start, end, dict_id=0):
+        """Generator, use with `yield from`; returns the file contents (b"" if empty).
+
+        Raises FileDownloadError when the watch refuses or stalls, WatchError when the
+        link is gone. Follows Gadgetbridge's HuaweiFileDownloadManager (new sync only).
+        """
+        reply = self.request(FDL.init_request(name, file_type, max(start, F.EARLIEST), end, dict_id), FILE_TIMEOUT)
+        if reply is None:
+            self._check_link("the download request for " + name)
+            raise FDL.FileDownloadError("The watch did not answer the download request for %s" % name)
+        init = FDL.parse_init(reply.tlv)
+        log.info("File %s: id %d, %s bytes", name, init["file_id"], init["size"])
+        if init["name"] and init["name"] != name:
+            raise FDL.FileDownloadError("The watch offered %s instead of %s" % (init["name"], name))
+        if init["size"] is None:
+            # Seen when the watch has no data of this kind (Gadgetbridge: "invalid file size")
+            raise FDL.FileDownloadError("The watch reported no valid size for %s" % name)
+        file_id, size = init["file_id"], init["size"]
+        if size == 0:
+            self.request(FDL.complete_request(file_id), 2.0)
+            return b""
+        yield
+        reply = self.request(FDL.info_request(file_id), FILE_TIMEOUT)
+        if reply is None:
+            self._check_link("the file info for " + name)
+            raise FDL.FileDownloadError("The watch did not answer the file info for %s" % name)
+        info = FDL.parse_info(reply.tlv)
+        timeout = max(info["timeout"], 5)
+        max_block = info["max_block"] or 4096
+        data = bytearray()
+        while len(data) < size:
+            block_start = len(data)
+            block = min(size - block_start, max_block)
+            while not self._file_blocks.empty():  # drop leftovers of an aborted download
+                self._file_blocks.get_nowait()
+            self._send(FDL.block_request(file_id, block_start, block, info["no_encrypt"], dict_id))
+            while len(data) - block_start < block:
+                try:
+                    pkt = self._file_blocks.get(timeout=timeout)
+                except queue.Empty:
+                    raise FDL.FileDownloadError("No data for %s for %d s (%d of %d bytes)"
+                                                % (name, timeout, len(data), size))
+                if pkt is None:
+                    raise WatchError("The connection closed during the download of %s" % name)
+                got_id, offset, chunk = FDL.decode_block(pkt.payload, self.params)
+                if got_id != file_id:
+                    raise FDL.FileDownloadError("Data for file id %d during the download of id %d" % (got_id, file_id))
+                if offset != len(data):
+                    log.warning("File %s: block at offset %d, expected %d", name, offset, len(data))
+                data += chunk
+            yield
+        if len(data) > size:
+            log.warning("File %s is %d bytes, %d were announced", name, len(data), size)
+        self.request(FDL.complete_request(file_id), 2.0)
+        log.info("Downloaded %s: %d bytes", name, len(data))
+        return bytes(data[:size])
+
+    def _check_link(self, what):
+        if not self._running:
+            raise WatchError("The connection closed during " + what)
+
+    def _health_files(self, result, sleep_file_start, stress_start, end):
+        """Generator: TruSleep (sleep stages + score) and stress files. A refused or broken
+        file is reported in result["file_errors"]; only a lost link ends the sync."""
+        if sleep_file_start is not None and self.is_ready():
+            # Gadgetbridge downloadDictTrueSleepData: TruSleep plus the dictionary sleep sync
+            if self.supports(F.SERVICE, 0x16) and self.supports_expand(CAP_DICT_SLEEP_SYNC):
+                try:
+                    data = yield from self._download_file(FDL.SEQUENCE_DATA_NAME, FDL.FileType.SEQUENCE_DATA,
+                                                          sleep_file_start, end, HF.SLEEP_DETAILS_CLASS)
+                    if data:
+                        result["sleep_sessions"] = HF.parse_sleep_file(data, self.supports_expand(CAP_BED_TIME))
+                        log.info("Health sync: %d sleep session(s) from the TruSleep file",
+                                 len(result["sleep_sessions"]))
+                except (FDL.FileDownloadError, HF.HealthFileError, KeyError, ValueError, struct.error) as e:
+                    log.warning("Health sync: sleep file failed: %s", e)
+                    result["file_errors"].append("sleep: %s" % e)
+            else:
+                log.info("Health sync: this watch has no TruSleep sequence data (old sleep files not supported)")
+        if stress_start is not None and self.is_ready() and self.supports(0x20, 0x09):
+            if not self.rri_new_sync:
+                log.info("Health sync: stress uses the old file download, not supported")
+                return
+            try:
+                data = yield from self._download_file(FDL.RRI_NAME, FDL.FileType.RRI, stress_start, end)
+                if data:
+                    result["stress"] = HF.parse_stress_file(data)
+                    log.info("Health sync: %d stress measurement(s)", len(result["stress"]))
+            except (FDL.FileDownloadError, HF.HealthFileError, KeyError, ValueError, struct.error) as e:
+                log.warning("Health sync: stress file failed: %s", e)
+                result["file_errors"].append("stress: %s" % e)
 
     # ------------------------------------------------------------------ health
-    def _health_steps(self, step_start, sleep_start):
+    def _health_steps(self, step_start, sleep_start, sleep_file_start=None, stress_start=None):
         """Generator: one request per step (see sync_health), same order as Gadgetbridge:
-        sleep count + messages, step count + messages, then today's totals."""
+        sleep count + messages, step count + messages, today's totals, then the files."""
         end = int(time.time())
-        result = {"totals": None, "samples": [], "sleep": [], "skipped": 0, "error": "",
+        result = {"totals": None, "samples": [], "sleep": [], "sleep_sessions": [], "stress": [],
+                  "file_errors": [], "skipped": 0, "error": "",
                   "step_start": step_start, "sleep_start": sleep_start, "end": end}
         try:
             for key, count_cmd, data_cmd, start in (
@@ -611,8 +767,12 @@ class HuaweiWatch:
                         result["totals"] = F.parse_totals(reply.tlv)
                     except (KeyError, ValueError, struct.error) as e:
                         log.warning("Health sync: unreadable totals: %s %r", e, reply.tlv)
+            yield from self._health_files(result, sleep_file_start, stress_start, end)
         except WatchError as e:
             result["error"] = str(e)
+        except Exception as e:  # noqa: BLE001 - always report back, or the UI shows "syncing" forever
+            log.exception("Health sync failed")
+            result["error"] = "Health sync failed: %s" % e
         log.info("Health sync done: %d minute(s), %d sleep period(s), totals %s%s",
                  len(result["samples"]), len(result["sleep"]), result["totals"],
                  (", error: " + result["error"]) if result["error"] else "")
@@ -638,8 +798,9 @@ class HuaweiWatch:
 
     # ----------------------------------------------------------- notifications
     def _next_msg_id(self):
-        self._msg_id = self._msg_id + 1 if self._msg_id < 256 else 0
-        return self._msg_id
+        with self._msg_id_lock:  # used by the worker and, for calls, the main thread
+            self._msg_id = self._msg_id + 1 if self._msg_id < 256 else 0
+            return self._msg_id
 
     def _send_notification(self, title, body, sender, app_id, kind, key):
         if not self.is_ready() or not self.supports(0x02, NC.ACTION):

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=WatchBridge caller names
+Comment=Looks up caller names for the call screen on the watch
+Icon=harbour-watchbridge
+Exec=/usr/bin/sailjail -p harbour-watchbridge-contacts.desktop /usr/libexec/harbour-watchbridge/contact-names
+NoDisplay=true
+X-Nemo-Application-Type=no-invoker
+
+[X-Sailjail]
+OrganizationName=harbour
+ApplicationName=watchbridge-contacts
+Permissions=Contacts

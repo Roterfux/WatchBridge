@@ -18,9 +18,19 @@ from watchbridge.huawei.tlv import TLV
 OK = TLV().put_int(0x7F, 0x000186A0)
 
 
+class _Raw:
+    """A packet body that is not TLV (Packet only calls serialize())."""
+
+    def __init__(self, data):
+        self.data = data
+
+    def serialize(self):
+        return self.data
+
+
 class FakeWatch:
     def __init__(self, sock, pin=b"123456", auth_token=None, device_support_type=4, encrypt_method=1,
-                 confirm_delay=0.0, drop_at=None, health=None):
+                 confirm_delay=0.0, drop_at=None, health=None, files=None, file_block=300):
         self.sock = sock
         self.pin = pin
         self.confirm_delay = confirm_delay  # seconds the "user" takes to tap the checkmark
@@ -30,6 +40,11 @@ class FakeWatch:
         self.health = health or {}
         self.fitness_requests = []
         self._step_window = self._sleep_window = []
+        # Files served over 0x2C, by name; block size forces several RequestBlocks
+        self.files = files or {}
+        self.file_block = file_block
+        self.file_requests = []     # (command, TLV) of every 0x2C request
+        self._file_ids = {}
         self.auth_token = auth_token  # known token = already paired
         self.params = Params()
         self.params.device_support_type = device_support_type
@@ -177,10 +192,38 @@ class FakeWatch:
             return self._send(7, c, TLV().put(0x81, inner), True)
         return self._send(7, c, OK, True)
 
+    def _files(self, c, t):
+        """File download, service 0x2C (new sync)."""
+        self.file_requests.append((c, t))
+        if c == 0x01:
+            name = t.get_string(0x01)
+            data = self.files.get(name)
+            fid = self._file_ids.setdefault(name, len(self._file_ids) + 1)
+            size = 0xFFFFFFFF if data is None else len(data)
+            return self._send(0x2C, 1, TLV().put(0x01, name).put_byte(0x02, t.get_byte(0x02)).put_byte(0x03, fid)
+                              .put_int(0x04, size), True)
+        if c == 0x03:
+            return self._send(0x2C, 3, TLV().put_byte(0x01, t.get_byte(0x01)).put_byte(0x02, 5)
+                              .put_short(0x03, 100).put_int(0x04, self.file_block).put_byte(0x05, 0), True)
+        if c == 0x04:
+            fid, offset, size = t.get_byte(0x01), t.get_int(0x02), t.get_int(0x03)
+            data = next(d for n, d in self.files.items() if self._file_ids.get(n) == fid)
+            self._send(0x2C, 4, OK, True)
+            # The block arrives as several raw 0x2C/0x05 packets of `burst` bytes, encrypted
+            for pos in range(offset, offset + size, 100):
+                chunk = data[pos:min(pos + 100, offset + size)]
+                self._send(0x2C, 5, _Raw(bytes([fid]) + struct.pack(">I", pos) + b"\x00" + chunk), True)
+            return None
+        return self._send(0x2C, c, OK, True)
+
     def _service(self, pkt):
         s, c, t = pkt.service, pkt.command, pkt.tlv
         if s == 0x07:
             return self._fitness(c, t)
+        if s == 0x2C:
+            return self._files(c, t)
+        if (s, c) == (0x01, 0x31):
+            return self._send(s, c, TLV().put_byte(0x02, 0x04 | 0x02), True)  # RRI and TruSleep new sync
         if (s, c) == (0x01, 0x07):
             return self._send(s, c, TLV().put(0x03, "HW1").put(0x07, "5.0.0.110").put(0x09, "SN123")
                               .put(0x0A, "HUAWEI WATCH GT 5 ").put(0x11, "HUAWEI WATCH GT 5-ABC"), True)
@@ -190,7 +233,7 @@ class FakeWatch:
             return self._send(s, c, TLV().put_byte(0x01, 87), True)
         if (s, c) == (0x01, 0x02):
             from watchbridge.huawei.commands import KNOWN_SUPPORTED_SERVICES
-            bitmap = bytes(1 if x in (0x02, 0x0B, 0x0C, 0x0F) else 0 for x in KNOWN_SUPPORTED_SERVICES)
+            bitmap = bytes(1 if x in (0x02, 0x07, 0x0B, 0x0C, 0x0F, 0x20) else 0 for x in KNOWN_SUPPORTED_SERVICES)
             return self._send(s, c, TLV().put(0x02, bitmap), True)
         if (s, c) == (0x01, 0x03):
             out = TLV()
@@ -202,11 +245,12 @@ class FakeWatch:
             return self._send(s, c, TLV().put(0x81, out), True)
         if (s, c) == (0x01, 0x37):
             caps = bytearray(32)
-            for bit in (0x2F, 77, 94, 120):
+            for bit in (0x2F, 74, 77, 94, 120, 143):  # 74: "call started"; 143: TruSleep as sequence data
                 caps[bit // 8] |= 1 << (bit % 8)
             return self._send(s, c, TLV().put(0x01, bytes(caps)), True)
         if (s, c) == (0x02, 0x02):
-            inner = TLV().put(0x91, TLV().put_byte(0x12, 0x01).put_byte(0x13, 0x02).put_short(0x14, 0x01F4))
+            inner = TLV().put(0x91, TLV().put_byte(0x12, 0x01).put_byte(0x13, 0x02).put_short(0x14, 0x01F4)) \
+                .put(0x91, TLV().put_byte(0x12, 0x07).put_byte(0x13, 0x01).put_short(0x14, 0x0020))  # incoming number
             return self._send(s, c, TLV().put(0x81, TLV().put(0x82, TLV().put(0x90, inner))), True)
         if (s, c) == (0x02, 0x01):
             self.notifications.append(t)

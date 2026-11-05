@@ -7,7 +7,7 @@ Page {
 
     property var daemon
     // The RPM build replaces this with the exact package version, e.g. "0.1.0-7"
-    readonly property string appVersion: "0.2.0-dev"
+    readonly property string appVersion: "0.4.0-dev"
     readonly property bool serviceRunning: !!daemon && daemon.available
     // Services before 0.1.0-7 did not report a version
     readonly property string serviceVersion: !serviceRunning ? ""

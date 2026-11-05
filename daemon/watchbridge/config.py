@@ -31,6 +31,10 @@ DEFAULTS = {
         # {app_name: {"package": str, "last": unix time}}. Maintained by the daemon.
         "seen_apps": {},
     },
+    "calls": {
+        "enabled": True,         # show incoming calls on the watch (reject / answer there)
+        "caller_names": True,    # look the caller up in Contacts (Sailfish asks for permission)
+    },
     "weather": {
         "enabled": True,
         "location": "",

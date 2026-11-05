@@ -2,6 +2,7 @@
 // Steps, heart rate and sleep for one day, from the data synced off the watch.
 import QtQuick 2.0
 import Sailfish.Silica 1.0
+import "../components"
 
 Page {
     id: page
@@ -10,6 +11,49 @@ Page {
     property string day: dateKey(new Date())
     property var h: ({})
     property bool loading: true
+
+    // Time axis of the day charts (steps, heart rate)
+    readonly property var dayTicks: [{ "pos": 0, "text": "00" }, { "pos": 0.25, "text": "06" },
+                                     { "pos": 0.5, "text": "12" }, { "pos": 0.75, "text": "18" },
+                                     { "pos": 1, "text": "24" }]
+    // Time axis of the sleep chart: whole hours between the first and the last period
+    readonly property var sleepTicks: {
+        var p = h.sleep && h.sleep.periods ? h.sleep.periods : []
+        if (p.length === 0) return []
+        var first = p[0][0], last = p[p.length - 1][1]
+        var span = Math.max(1, last - first)
+        var step = span > 8 * 3600 ? 2 : 1
+        var d = new Date(first * 1000)
+        d.setMinutes(0, 0, 0)
+        d = new Date(d.getTime() + 3600000)
+        var out = []
+        while (d.getTime() / 1000 < last) {
+            if (d.getHours() % step === 0)
+                out.push({ "pos": (d.getTime() / 1000 - first) / span, "text": Qt.formatTime(d, "hh:mm") })
+            d = new Date(d.getTime() + 3600000)
+        }
+        return out
+    }
+
+    function stageColor(stage) {
+        return stage === "awake" ? "#ff6b5e"
+             : stage === "deep" ? Theme.highlightColor
+             : stage === "rem" ? Theme.rgba(Theme.highlightColor, 0.7)
+             : Theme.rgba(Theme.highlightColor, 0.4)
+    }
+    // Faint vertical lines at the axis ticks
+    function drawGrid(ctx, width, height, ticks) {
+        ctx.strokeStyle = Theme.rgba(Theme.secondaryColor, 0.25)
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        for (var i = 0; i < ticks.length; i++) {
+            if (ticks[i].pos <= 0 || ticks[i].pos >= 1) continue
+            var x = Math.round(ticks[i].pos * width) + 0.5
+            ctx.moveTo(x, 0)
+            ctx.lineTo(x, height)
+        }
+        ctx.stroke()
+    }
 
     readonly property var hs: daemon.status.health || {}
     readonly property int lastSync: hs.lastSync || 0
@@ -145,6 +189,7 @@ Page {
                 onPaint: {
                     var ctx = getContext("2d")
                     ctx.clearRect(0, 0, width, height)
+                    page.drawGrid(ctx, width, height, page.dayTicks)
                     var max = 1
                     for (var i = 0; i < bars.length; i++) max = Math.max(max, bars[i])
                     var w = width / 24
@@ -157,19 +202,11 @@ Page {
                     ctx.fillRect(0, height - 1, width, 1)
                 }
             }
-            Row {
+            TimeAxis {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * x
                 visible: page.hasData
-                Repeater {
-                    model: ["00", "06", "12", "18"]
-                    Label {
-                        width: parent.width / 4
-                        text: modelData
-                        font.pixelSize: Theme.fontSizeTiny
-                        color: Theme.secondaryColor
-                    }
-                }
+                ticks: page.dayTicks
             }
 
             // ----------------------------------------------------- heart rate
@@ -185,6 +222,7 @@ Page {
                 onPaint: {
                     var ctx = getContext("2d")
                     ctx.clearRect(0, 0, width, height)
+                    page.drawGrid(ctx, width, height, page.dayTicks)
                     if (points.length === 0) return
                     var lo = h.heartRateMin - 5, hi = h.heartRateMax + 5
                     ctx.strokeStyle = "#ff6b5e"
@@ -199,6 +237,12 @@ Page {
                     }
                     ctx.stroke()
                 }
+            }
+            TimeAxis {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                visible: hrChart.visible
+                ticks: page.dayTicks
             }
             DetailItem {
                 visible: page.hasData && h.heartRateAvg !== null && h.heartRateAvg !== undefined
@@ -237,38 +281,123 @@ Page {
                       : qsTr("No sleep recorded for the night before this day.")
                 color: h.sleep && h.sleep.minutes > 0 ? Theme.highlightColor : Theme.secondaryColor
             }
+            // Hypnogram: awake on top, then REM, light and deep at the bottom
             Canvas {
                 id: sleepChart
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * x
-                height: Theme.itemSizeExtraSmall
+                height: Theme.itemSizeLarge
                 visible: page.hasData && !!h.sleep && h.sleep.minutes > 0
                 property var night: h.sleep || {}
+                readonly property var rows: ({ "awake": 0, "rem": 1, "light": 2, "nap": 2, "deep": 3 })
                 onNightChanged: requestPaint()
                 onPaint: {
                     var ctx = getContext("2d")
                     ctx.clearRect(0, 0, width, height)
                     var periods = night.periods || []
                     if (periods.length === 0) return
-                    var span = Math.max(1, night.end - night.start)
+                    page.drawGrid(ctx, width, height, page.sleepTicks)
+                    var first = periods[0][0], last = periods[periods.length - 1][1]
+                    var span = Math.max(1, last - first)
+                    var rowH = height / 4
                     for (var i = 0; i < periods.length; i++) {
-                        var deep = periods[i][2] === "deep"
-                        ctx.fillStyle = deep ? Theme.highlightColor : Theme.rgba(Theme.highlightColor, 0.4)
-                        var x = width * (periods[i][0] - night.start) / span
+                        var stage = periods[i][2]
+                        var row = rows[stage] !== undefined ? rows[stage] : 2
+                        ctx.fillStyle = page.stageColor(stage)
+                        var x = width * (periods[i][0] - first) / span
                         var w = Math.max(1, width * (periods[i][1] - periods[i][0]) / span)
-                        ctx.fillRect(x, deep ? 0 : height / 3, w, deep ? height : height * 2 / 3)
+                        ctx.fillRect(x, row * rowH + 1, w, rowH - 2)
+                    }
+                }
+            }
+            TimeAxis {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                visible: sleepChart.visible
+                ticks: page.sleepTicks
+            }
+            // Legend, top to bottom in the order of the chart's rows
+            Flow {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                spacing: Theme.paddingLarge
+                visible: sleepChart.visible
+                Repeater {
+                    model: [["awake", qsTr("Awake")], ["rem", qsTr("REM")], ["light", qsTr("Light")],
+                            ["deep", qsTr("Deep")]]
+                    Row {
+                        spacing: Theme.paddingSmall
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Theme.fontSizeExtraSmall
+                            height: width
+                            radius: 2
+                            color: page.stageColor(modelData[0])
+                        }
+                        Label {
+                            text: modelData[1]
+                            font.pixelSize: Theme.fontSizeExtraSmall
+                            color: Theme.secondaryColor
+                        }
                     }
                 }
             }
             DetailItem {
-                visible: page.hasData && !!h.sleep && !!h.sleep.byType && !!h.sleep.byType.deep
-                label: qsTr("Deep sleep")
-                value: h.sleep && h.sleep.byType ? duration(h.sleep.byType.deep || 0) : ""
+                visible: page.hasData && !!h.sleep && h.sleep.score !== null && h.sleep.score !== undefined
+                label: qsTr("Sleep score")
+                value: h.sleep ? String(h.sleep.score) : ""
             }
             DetailItem {
-                visible: page.hasData && !!h.sleep && !!h.sleep.byType && !!h.sleep.byType.light
-                label: qsTr("Light sleep")
-                value: h.sleep && h.sleep.byType ? duration(h.sleep.byType.light || 0) : ""
+                visible: page.hasData && !!h.sleep && !!h.sleep.summary && !!h.sleep.summary.efficiency
+                label: qsTr("Efficiency")
+                value: h.sleep && h.sleep.summary ? h.sleep.summary.efficiency + " %" : ""
+            }
+            DetailItem {
+                visible: page.hasData && !!h.sleep && !!h.sleep.summary && h.sleep.summary.latency !== undefined
+                label: qsTr("Time to fall asleep")
+                value: h.sleep && h.sleep.summary ? duration(h.sleep.summary.latency || 0) : ""
+            }
+            Repeater {
+                model: [["deep", qsTr("Deep sleep")], ["rem", qsTr("REM sleep")],
+                        ["light", qsTr("Light sleep")], ["nap", qsTr("Nap")], ["awake", qsTr("Awake")]]
+                DetailItem {
+                    visible: page.hasData && !!h.sleep && !!h.sleep.byType && !!h.sleep.byType[modelData[0]]
+                    label: modelData[1]
+                    value: h.sleep && h.sleep.byType ? duration(h.sleep.byType[modelData[0]] || 0) : ""
+                }
+            }
+            DetailItem {
+                visible: page.hasData && !!h.sleep && !!h.sleep.summary && !!h.sleep.summary.avg_breath_rate
+                label: qsTr("Breathing rate")
+                value: h.sleep && h.sleep.summary ? qsTr("%1 /min").arg(h.sleep.summary.avg_breath_rate) : ""
+            }
+
+            // --------------------------------------------------------- stress
+            SectionHeader { text: qsTr("Stress"); visible: page.hasData && !!h.stress && h.stress.count > 0 }
+            Canvas {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                height: Theme.itemSizeMedium
+                visible: page.hasData && !!h.stress && h.stress.count > 0
+                property var points: h.stress ? h.stress.points : []
+                onPointsChanged: requestPaint()
+                onPaint: {
+                    var ctx = getContext("2d")
+                    ctx.clearRect(0, 0, width, height)
+                    for (var i = 0; i < points.length; i++) {
+                        var v = points[i][1]
+                        // Huawei's bands: relaxed < 30, normal < 60, medium < 80, high
+                        ctx.fillStyle = v < 30 ? "#4fb3ff" : v < 60 ? "#7fd36b" : v < 80 ? "#ffb347" : "#ff6b5e"
+                        var x = width * points[i][0] / 86400
+                        var bh = height * v / 100
+                        ctx.fillRect(x - 1, height - bh, 3, bh)
+                    }
+                }
+            }
+            DetailItem {
+                visible: page.hasData && !!h.stress && h.stress.count > 0
+                label: qsTr("Average / highest")
+                value: h.stress ? qsTr("%1 / %2").arg(h.stress.avg).arg(h.stress.max) : ""
             }
         }
 

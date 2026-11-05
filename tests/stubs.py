@@ -20,6 +20,7 @@ def _install_dbus():
         pass
     dbus = types.ModuleType("dbus")
     dbus.DBusException = Exception
+    dbus.PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
     dbus.Boolean = bool
     dbus.String = str
     dbus.UInt32 = int

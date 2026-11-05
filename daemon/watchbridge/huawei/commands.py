@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Ported from Gadgetbridge (packets/DeviceConfig.java, Notifications.java,
-# Weather.java, LocaleConfig.java, FindPhone.java, AccountRelated.java),
+# Weather.java, LocaleConfig.java, FindPhone.java, AccountRelated.java, Calls.java;
+# requests/SendNotificationRequest.java and StopNotificationRequest.java for calls),
 # Copyright (C) 2024 Damien Gaignon, José Rebelo, Martin.JM, Vitalii Tomin.
 # Translated to Python and modified for WatchBridge, 2026. See NOTICE.md.
 """Builders and parsers for the Huawei services used by WatchBridge."""
@@ -410,9 +411,11 @@ def language(locale_str, imperial=False):
 class NotificationType:
     CALL = 0x01
     SMS = 0x02
-    STOP = 0x0C
+    STOP = 0x0C        # stop showing a (call) notification
+    START_CALL = 0x0D  # the call was answered (expand capability 74)
     MISSED_CALL = 0x0E
     EMAIL = 0x0F
+    OUTGOING_CALL = 0x32
     GENERIC = 0x7F
 
 
@@ -420,13 +423,38 @@ class TextType:
     TEXT = 0x01
     SENDER = 0x02
     TITLE = 0x03
+    FLIGHT = 0x07  # Gadgetbridge's name; carries the caller's number in call notifications
 
 
 def notification(msg_id, notification_type, title, sender, body, source_app_id, encoding=0x02, params=None):
     """NotificationActionRequest. `params` is a dict of additional parameters."""
+    elements = [(TextType.TITLE, encoding, title), (TextType.SENDER, encoding, sender), (TextType.TEXT, encoding, body)]
+    return _notification_packet(msg_id, notification_type, elements, source_app_id, params)
+
+
+def call_notification(msg_id, name, number, encoding=0x02, number_format=None):
+    """Incoming call (SendNotificationRequest.buildNotificationTLVFromCallSpec).
+
+    `name` is what the watch shows (contact name, or the number); `number_format` is the
+    watch's incoming-number encoding, None when it does not support the number element.
+    """
+    elements = [(TextType.TEXT, encoding, name)]
+    if number_format is not None:
+        elements.append((TextType.FLIGHT, number_format, number))
+    return _notification_packet(msg_id, NotificationType.CALL, elements, None, None)
+
+
+def stop_call_notification(msg_id, notification_type=NotificationType.STOP, encoding=0x02):
+    """StopNotificationRequest: ends the call screen (STOP) or marks it answered (START_CALL).
+
+    The watch does not answer this packet."""
+    return _notification_packet(msg_id, notification_type, [(TextType.TEXT, encoding, "")], None, None)
+
+
+def _notification_packet(msg_id, notification_type, elements, source_app_id, params):
     t = TLV().put_short(0x01, msg_id).put_byte(0x02, notification_type).put(0x03, True)
     sub = TLV()
-    for text_type, value in ((TextType.TITLE, title), (TextType.SENDER, sender), (TextType.TEXT, body)):
+    for text_type, encoding, value in elements:
         el = TLV().put_byte(0x0E, text_type).put_byte(0x0F, encoding)
         if value:
             el.put(0x10, value)
@@ -488,6 +516,21 @@ def parse_notification_constraints(tlv):
 
 
 # --- Calls / find phone --------------------------------------------------------
+
+CALL_ANSWER = 0x01  # Calls service: the watch's buttons on the call screen (AnswerCallResponse)
+CALL_ACTION_REJECT = "reject"
+CALL_ACTION_ACCEPT = "accept"
+
+
+def parse_call_action(tlv):
+    """Calls.AnswerCallResponse: 1 = reject, 2 = accept; anything else is returned as an int."""
+    value = tlv.get_byte(0x01, -1)
+    if value == 0x01:
+        return CALL_ACTION_REJECT
+    if value == 0x02:
+        return CALL_ACTION_ACCEPT
+    return value
+
 
 def find_phone_stop():
     return Packet(Service.FIND_PHONE, 0x02, TLV().put_byte(0x01, 0x02))

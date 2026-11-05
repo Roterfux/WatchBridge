@@ -11,6 +11,7 @@ Page {
     readonly property var w: s.weather || {}
     readonly property var watch: s.watch || {}
     readonly property var hl: s.health || {}
+    readonly property var calls: s.calls || {}
 
     readonly property var intervals: [15, 30, 60, 120, 180]
     readonly property var healthIntervals: [1, 3, 6, 12, 24]
@@ -87,6 +88,32 @@ Page {
                                                            : (n.allowed_apps || []).join(", ")
                 onClicked: page.openAppList("allowed_apps", qsTr("Allowed apps"),
                     qsTr("Only notifications from these apps are sent to the watch."))
+            }
+
+            SectionHeader { text: qsTr("Calls") }
+
+            TextSwitch {
+                text: qsTr("Show incoming calls on the watch")
+                description: qsTr("Reject the call on the watch, or silence the ringtone.")
+                checked: calls.enabled !== false
+                automaticCheck: false
+                onClicked: daemon.updateSettings({ "calls": { "enabled": !checked } })
+            }
+            TextSwitch {
+                enabled: calls.enabled !== false
+                text: qsTr("Show the caller's name")
+                description: {
+                    var st = daemon.status.calls || {}
+                    var base = qsTr("Looks the number up in Contacts. Sailfish asks once for permission.")
+                    if (calls.caller_names === false || calls.enabled === false) return base
+                    if (st.names === "loading") return base + "\n" + qsTr("Reading contacts…")
+                    if (st.names === "ready") return base + "\n" + qsTr("%n phone number(s) known", "", st.nameCount || 0)
+                    if (st.names === "failed") return base + "\n" + qsTr("Not available: %1").arg(st.namesError || "")
+                    return base
+                }
+                checked: calls.caller_names !== false
+                automaticCheck: false
+                onClicked: daemon.updateSettings({ "calls": { "caller_names": !checked } })
             }
 
             SectionHeader { text: qsTr("Weather") }

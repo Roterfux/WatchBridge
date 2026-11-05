@@ -1,0 +1,72 @@
+#!/usr/bin/python3
+# WatchBridge - Huawei Watch GT 5 companion for Sailfish OS
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Print the phone numbers and display names from the Sailfish contacts as JSON.
+
+Sailfish keeps the contacts in privileged storage that the WatchBridge service cannot
+read. This helper is started through sailjail with the Contacts permission
+(harbour-watchbridge-contacts.desktop), so Sailfish asks the user once. It only reads,
+and it writes nothing but its output: {"contacts": [[number, name], ...]}.
+The service keeps the result in memory to name callers on the watch.
+
+Runs inside the sandbox, where /usr/share/harbour-watchbridge is not visible, so it must
+stay self-contained.
+"""
+
+import json
+import os
+import sqlite3
+import sys
+
+DB = "~/.local/share/system/privileged/Contacts/qtcontacts-sqlite/contacts.db"
+
+QUERY = """
+SELECT p.phoneNumber, d.displayLabel, n.firstName, n.lastName
+FROM PhoneNumbers p
+JOIN Contacts c ON c.contactId = p.contactId
+LEFT JOIN DisplayLabels d ON d.contactId = p.contactId
+LEFT JOIN Names n ON n.contactId = p.contactId
+"""
+
+
+def _open(path):
+    try:
+        return sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    except sqlite3.OperationalError:
+        # Read-only opening can fail on a WAL database whose -shm file is missing
+        return sqlite3.connect("file:%s?immutable=1" % path, uri=True)
+
+
+def read_contacts(path):
+    con = _open(path)
+    try:
+        try:
+            rows = con.execute(QUERY + " WHERE c.deleted IS NULL").fetchall()
+        except sqlite3.OperationalError:  # older schema without the deleted column
+            rows = con.execute(QUERY).fetchall()
+    finally:
+        con.close()
+    seen = set()
+    out = []
+    for number, label, first, last in rows:
+        name = (label or "").strip() or " ".join(x for x in ((first or "").strip(), (last or "").strip()) if x)
+        if not number or not name or (number, name) in seen:
+            continue
+        seen.add((number, name))
+        out.append([number, name])
+    return out
+
+
+def main():
+    path = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else DB)
+    try:
+        contacts = read_contacts(path)
+    except (sqlite3.Error, OSError) as e:
+        print("Cannot read the contacts: %s" % e, file=sys.stderr)
+        return 1
+    json.dump({"contacts": contacts}, sys.stdout, ensure_ascii=False)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

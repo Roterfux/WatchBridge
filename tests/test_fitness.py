@@ -156,8 +156,9 @@ class TestHealthSync(unittest.TestCase):
         self.assertEqual(r["sleep"], [(base - 8 * 3600, base - 8 * 3600 + 5400, 0x06),
                                       (base - 8 * 3600 + 5400, base - 8 * 3600 + 8100, 0x07)])
         self.assertTrue(watch.notifications)
-        # Requests went out in Gadgetbridge's order: sleep, steps, totals
-        order = [c for c, _ in watch.fitness_requests]
+        # Requests went out in Gadgetbridge's order: sleep, steps, totals (0x23, the resting
+        # heart rate capability, is sent while connecting)
+        order = [c for c, _ in watch.fitness_requests if c != 0x23]
         self.assertEqual(order, [0x0C, 0x0D, 0x0A, 0x0B, 0x0B, 0x03])
 
 
@@ -184,7 +185,7 @@ class TestHealthStore(unittest.TestCase):
         samples = [{"time": self.t0 + 60 * i, "steps": 10, "heart_rate": 60 + i} for i in range(30)]
         sleep = [(self.t0 - 7 * 3600, self.t0 - 4 * 3600, 0x06), (self.t0 - 4 * 3600, self.t0 - 3 * 3600, 0x07)]
         counts = self.store.add_sync_result(self.result(samples, sleep), now=self.t0)
-        self.assertEqual(counts, {"minutes": 30, "sleep": 2})
+        self.assertEqual(counts, {"minutes": 30, "sleep": 2, "sleepSessions": 0, "stress": 0})
         s = self.store.day_summary(self.day)
         self.assertEqual((s["steps"], s["hourlySteps"][7], s["heartRateMin"], s["heartRateMax"]), (300, 300, 60, 89))
         self.assertEqual(s["sleep"]["byType"], {"light": 180, "deep": 60})

@@ -37,6 +37,7 @@ class Recorder(D.Listener):
         self.battery = None
         self.info = None
         self.weather_requests = 0
+        self.call_actions = []
         self.connected = threading.Event()
         self.failed = threading.Event()
 
@@ -55,6 +56,9 @@ class Recorder(D.Listener):
 
     def on_weather_requested(self):
         self.weather_requests += 1
+
+    def on_call_action(self, action):
+        self.call_actions.append(action)
 
 
 def wait_for(cond, timeout=5.0):
@@ -114,6 +118,35 @@ class TestDevice(unittest.TestCase):
         self.assertTrue(wait_for(lambda: rec.weather_requests == 1))
         watch.push(0x01, 0x27, TLV().put_byte(0x01, 55))
         self.assertTrue(wait_for(lambda: rec.battery == 55))
+
+    def test_incoming_call(self):
+        dev, watch, rec, store = self.make({})
+        dev.start()
+        self.assertTrue(rec.connected.wait(10), rec.states)
+        self.assertEqual(dev.notification_constraints["incoming_number_format"], 0x01)
+
+        def elements(n):
+            return [(e.get_byte(0x0E), e.get_byte(0x0F), e.get_string(0x10, ""))
+                    for e in n.get_object(0x84).get_object(0x8C).get_objects(0x8D)]
+
+        self.assertTrue(dev.send_incoming_call("Bob", "+43 664 1234567"))
+        self.assertTrue(wait_for(lambda: len(watch.notifications) == 1))
+        call = watch.notifications[0]
+        self.assertEqual(call.get_byte(0x02), 0x01)  # call
+        # Gadgetbridge: the name as text, the number as "flight" element in the number format
+        self.assertEqual(elements(call), [(0x01, 0x02, "Bob"), (0x07, 0x01, "+43 664 1234567")])
+        self.assertFalse(call.contains(0x11))  # no source app for a phone call
+
+        dev.end_call(answered=True)   # expand capability 74 -> "call started"
+        dev.end_call()
+        self.assertTrue(wait_for(lambda: len(watch.notifications) == 3))
+        self.assertEqual([n.get_byte(0x02) for n in watch.notifications[1:]], [0x0D, 0x0C])
+        self.assertEqual(elements(watch.notifications[2]), [(0x01, 0x02, "")])
+
+        for value in (0x01, 0x02, 0x05):
+            watch.push(0x04, 0x01, TLV().put_byte(0x01, value))
+        self.assertTrue(wait_for(lambda: len(rec.call_actions) == 3))
+        self.assertEqual(rec.call_actions, ["reject", "accept", 5])
 
     def test_reconnect_with_stored_token(self):
         token = os.urandom(32)

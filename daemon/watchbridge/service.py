@@ -22,7 +22,10 @@ from gi.repository import GLib
 
 from . import __version__, weather
 from .bluez import Bluez
+from .calls import CallMonitor
 from .config import Config
+from .contacts import ContactNames
+from .huawei import commands as HC
 from .huawei import device as D
 from .notifications import NotificationMonitor
 
@@ -37,6 +40,8 @@ RECONNECT_DELAYS = [5, 15, 30, 60, 120, 300]
 # otherwise a link the watch drops right after setup is retried every 5 s forever.
 STABLE_CONNECTION = 60
 WEATHER_MAX_AGE = 30 * 60
+CONTACTS_REFRESH = 6 * 3600       # re-read the caller names this often
+CONTACTS_RETRY_UNKNOWN = 10 * 60  # after a call from an unknown number, re-read at most this often
 
 
 class ReconnectBackoff:
@@ -111,6 +116,9 @@ class _MainLoopListener(D.Listener):
     def on_health_data(self, result):
         self._post(self.service._watch_health_data, result)
 
+    def on_call_action(self, action):
+        self._post(self.service._watch_call_action, action)
+
 
 class Service(dbus.service.Object):
     def __init__(self, session_bus, system_bus, config=None):
@@ -138,6 +146,10 @@ class Service(dbus.service.Object):
         self._health_error = ""
         self._health_syncing = False
         self._health_last_result = None
+        self._call_on_watch = None      # handler id of the call shown on the watch
+        self._contacts = ContactNames()
+        self._contacts_time = 0
+        self._calls = CallMonitor(session_bus, self._on_incoming_call, self._on_call_answered, self._on_call_ended)
         self._open_health_store()
         # Check every 15 minutes whether an automatic health sync is due
         GLib.timeout_add_seconds(15 * 60, lambda: (self._maybe_sync_health(), True)[1])
@@ -148,6 +160,13 @@ class Service(dbus.service.Object):
         self._notifications = NotificationMonitor(self._on_notification, on_app_seen=self._on_app_seen)
         self._apply_notification_settings()
         self._notifications.start()
+        try:
+            self._calls.start()
+        except dbus.DBusException as e:
+            log.warning("Cannot follow phone calls: %s", e)
+        # Not at once: the first run may show Sailfish's permission prompt
+        GLib.timeout_add_seconds(15, lambda: (self._refresh_contacts(), False)[1])
+        GLib.timeout_add_seconds(CONTACTS_REFRESH, lambda: (self._refresh_contacts(), True)[1])
         self._schedule_weather()
         if self.config.data["device"]["address"] and self.config.data["auto_reconnect"]:
             GLib.timeout_add_seconds(2, lambda: (self._connect(), False)[1])
@@ -167,8 +186,11 @@ class Service(dbus.service.Object):
         old_weather = dict(self.config.data["weather"])
         old_folder = self.config.data["health"].get("folder")
         old_hr = self.config.data["health"].get("continuous_heart_rate")
+        old_calls = dict(self.config.data["calls"])
         self.config.update_public(changes)
         self._apply_notification_settings()
+        if self.config.data["calls"] != old_calls:
+            self._refresh_contacts()
         if self.config.data["health"].get("folder") != old_folder:
             self._open_health_store()
             self._emit_status()
@@ -334,6 +356,12 @@ class Service(dbus.service.Object):
                 "error": self._health_error,
                 "lastResult": self._health_last_result,
                 "folder": self._health.folder if self._health is not None else "",
+            },
+            "calls": {
+                "available": self._calls.available,
+                "names": self._contacts.state,       # off | loading | ready | failed
+                "nameCount": self._contacts.count,
+                "namesError": self._contacts.error,
             },
         }
 
@@ -555,11 +583,16 @@ class Service(dbus.service.Object):
         # Re-read the last stored minute/period: the watch may have filled them in since
         step_start = self._health.last_activity_time() or first
         sleep_start = self._health.last_sleep_end() or first
+        # Each file has its own start: basic sleep periods during the day must not hide last night
+        sleep_file_start = self._health.last_sleep_session_end() or first
+        stress_start = self._health.last_stress_end() or first
         self._health_syncing = True
         self._health_error = ""
         self._emit_status()
-        log.info("Health sync from %s (activity) / %s (sleep)", time.ctime(step_start), time.ctime(sleep_start))
-        self.watch.sync_health(step_start, sleep_start)
+        log.info("Health sync from %s (activity) / %s (sleep) / %s (TruSleep) / %s (stress)",
+                 time.ctime(step_start), time.ctime(sleep_start), time.ctime(sleep_file_start),
+                 time.ctime(stress_start))
+        self.watch.sync_health(step_start, sleep_start, sleep_file_start, stress_start)
 
     def _watch_health_data(self, watch, result):
         if not self._health_syncing:
@@ -574,6 +607,7 @@ class Service(dbus.service.Object):
             return
         counts["totals"] = result.get("totals")
         counts["skipped"] = result.get("skipped", 0)
+        counts["fileErrors"] = result.get("file_errors", [])
         self._health_last_result = counts
         self._health_error = result.get("error", "")
         if not result.get("error"):
@@ -648,6 +682,55 @@ class Service(dbus.service.Object):
     def _watch_weather_requested(self, watch):
         if watch is self.watch:
             self._refresh_weather(push=True)
+
+    # ================================================================== calls
+    def _refresh_contacts(self):
+        c = self.config.data["calls"]
+        if not c.get("enabled", True) or not c.get("caller_names", True):
+            self._contacts.clear()
+            self._emit_status()
+            return
+        self._contacts_time = time.monotonic()
+        self._contacts.refresh(done=lambda: GLib.idle_add(lambda: (self._emit_status(), False)[1]))
+        self._emit_status()
+
+    def _on_incoming_call(self, handler_id, number):
+        if not self.config.data["calls"].get("enabled", True) or not self._ready():
+            return
+        name = None
+        if self.config.data["calls"].get("caller_names", True):
+            name = self._contacts.lookup(number)
+            if name is None and time.monotonic() - self._contacts_time > CONTACTS_RETRY_UNKNOWN:
+                self._refresh_contacts()  # maybe a new contact; helps the next call
+        shown = name or number or "Unknown number"
+        if self.watch.send_incoming_call(shown, number):
+            log.info("Incoming call shown on the watch (%s)", "contact" if name else "number only")
+            self._call_on_watch = handler_id
+
+    def _on_call_answered(self, handler_id):
+        if handler_id == self._call_on_watch and self._ready():
+            self.watch.end_call(answered=True)
+
+    def _on_call_ended(self, handler_id, answered):
+        if handler_id != self._call_on_watch:
+            return
+        self._call_on_watch = None
+        if self._ready():
+            self.watch.end_call()
+
+    def _watch_call_action(self, watch, action):
+        handler_id = self._call_on_watch
+        if watch is not self.watch or handler_id is None:
+            log.info("Call action %s from the watch, but no call is shown", action)
+            return
+        if action == HC.CALL_ACTION_REJECT:
+            self._calls.hang_up(handler_id)
+        elif action == HC.CALL_ACTION_ACCEPT:
+            self._calls.answer(handler_id)
+        else:
+            # Not known from Gadgetbridge; most likely the watch's mute button
+            log.info("Unknown call action %r from the watch, silencing the ringtone", action)
+            self._calls.silence_ringtone()
 
     # ============================================================= find phone
     def _watch_find_phone(self, watch, start):

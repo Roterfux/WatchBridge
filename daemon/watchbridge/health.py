@@ -7,8 +7,11 @@ USB or with a sync app (default ~/Documents/WatchBridge):
 
     health.sqlite          all data, the source of truth
     activity-YYYY-MM.csv   one row per minute: steps, kcal, distance, heart rate, SpO2
-    sleep.csv              one row per period (light/deep sleep, other-0xNN = not sleep)
-    daily.csv              one row per day: totals, heart rate range, sleep minutes
+    sleep.csv              one row per period: TruSleep stages (light, deep, rem, awake, nap)
+                           and basic sleep (light/deep, other-0xNN = not sleep)
+    sleep-sessions.csv     one row per night: sleep score, efficiency, heart rate, SpO2 ...
+    stress.csv             one row per stress measurement (score 1-99, level)
+    daily.csv              one row per day: totals, heart rate range, sleep, stress
 
 CSV files are rewritten from the database after each sync (only the months that
 changed), so they can be edited or deleted freely.
@@ -16,6 +19,7 @@ changed), so they can be edited or deleted freely.
 
 import csv
 import datetime
+import json
 import logging
 import os
 import sqlite3
@@ -33,6 +37,23 @@ CREATE TABLE IF NOT EXISTS sleep (
     start INTEGER PRIMARY KEY,          -- unix seconds
     end INTEGER NOT NULL,
     type TEXT NOT NULL                  -- light, deep, or other-0xNN (not sleep, see SLEEP_NAMES)
+);
+CREATE TABLE IF NOT EXISTS sleep_stages (  -- TruSleep: light, deep, rem, awake, nap
+    start INTEGER PRIMARY KEY,
+    end INTEGER NOT NULL,
+    stage TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sleep_sessions (  -- TruSleep: one row per night (or nap)
+    start INTEGER PRIMARY KEY,          -- fell asleep
+    end INTEGER,                        -- woke up
+    score INTEGER,
+    summary TEXT                        -- all summary fields as JSON
+);
+CREATE TABLE IF NOT EXISTS stress (
+    start INTEGER PRIMARY KEY,
+    end INTEGER NOT NULL,
+    score INTEGER,                      -- 1..99
+    level INTEGER
 );
 CREATE TABLE IF NOT EXISTS totals (
     day TEXT PRIMARY KEY,               -- local date, YYYY-MM-DD
@@ -121,8 +142,24 @@ class HealthStore:
             if totals:
                 self.db.execute("INSERT OR REPLACE INTO totals VALUES (?, ?, ?, ?, ?)",
                                 (_day(now), totals["steps"], totals["calories"], totals["distance"], now))
-        self.export_csv(months, sleep_changed=bool(result.get("sleep")), totals_changed=bool(totals))
-        return {"minutes": len(merged), "sleep": len(result.get("sleep", []))}
+            sessions = result.get("sleep_sessions") or []
+            for s in sessions:
+                stages = s.get("stages") or []
+                if stages:
+                    # A re-download may cut the night differently: replace its stages
+                    self.db.execute("DELETE FROM sleep_stages WHERE start >= ? AND start < ?",
+                                    (stages[0][0], stages[-1][1]))
+                    self.db.executemany("INSERT OR REPLACE INTO sleep_stages VALUES (?, ?, ?)", stages)
+                self.db.execute("INSERT OR REPLACE INTO sleep_sessions VALUES (?, ?, ?, ?)",
+                                (s["start"], s["end"], s["summary"].get("score"),
+                                 json.dumps(s["summary"], sort_keys=True)))
+            stress = result.get("stress") or []
+            self.db.executemany("INSERT OR REPLACE INTO stress VALUES (?, ?, ?, ?)", stress)
+        sleep_changed = bool(result.get("sleep")) or bool(sessions)
+        self.export_csv(months, sleep_changed=sleep_changed, totals_changed=bool(totals),
+                        stress_changed=bool(stress))
+        return {"minutes": len(merged), "sleep": len(result.get("sleep", [])),
+                "sleepSessions": len(sessions), "stress": len(stress)}
 
     # -------------------------------------------------------------- reading
     def last_activity_time(self):
@@ -131,6 +168,14 @@ class HealthStore:
 
     def last_sleep_end(self):
         row = self.db.execute("SELECT MAX(end) FROM sleep").fetchone()
+        return row[0]
+
+    def last_sleep_session_end(self):
+        row = self.db.execute("SELECT MAX(end) FROM sleep_sessions").fetchone()
+        return row[0]
+
+    def last_stress_end(self):
+        row = self.db.execute("SELECT MAX(end) FROM stress").fetchone()
         return row[0]
 
     def day_summary(self, day):
@@ -176,33 +221,61 @@ class HealthStore:
             "restingHeartRate": min(resting) if resting else None,
             "spo2Min": min(spo2) if spo2 else None,
             "sleep": self.night(day),
+            "stress": self.stress_summary(day),
         }
 
     def night(self, day):
         """Sleep periods of the night ending on `day` (from 18:00 the evening before)."""
         start, _ = _day_bounds(day)
         lo, hi = start - (24 - NIGHT_SPLIT_HOUR) * 3600, start + NIGHT_SPLIT_HOUR * 3600
-        rows = self.db.execute("SELECT start, end, type FROM sleep WHERE start >= ? AND start < ? AND type IN (%s) "
-                               "ORDER BY start" % ",".join("?" * len(SLEEP_KINDS)),
-                               (lo, hi) + SLEEP_KINDS).fetchall()
+        # TruSleep stages when the watch provides them, basic light/deep sleep otherwise
+        rows = self.db.execute("SELECT start, end, stage FROM sleep_stages WHERE start >= ? AND start < ? "
+                               "ORDER BY start", (lo, hi)).fetchall()
+        source = "trusleep"
+        if not rows:
+            source = "basic"
+            rows = self.db.execute("SELECT start, end, type FROM sleep WHERE start >= ? AND start < ? "
+                                   "AND type IN (%s) ORDER BY start" % ",".join("?" * len(SLEEP_KINDS)),
+                                   (lo, hi) + SLEEP_KINDS).fetchall()
         minutes = {}
         for s, e, kind in rows:
             minutes[kind] = minutes.get(kind, 0) + (e - s) // 60
+        session = self.db.execute("SELECT start, end, summary FROM sleep_sessions WHERE start >= ? AND start < ? "
+                                  "ORDER BY end - start DESC LIMIT 1", (lo, hi)).fetchone()
+        summary = json.loads(session[2]) if session and session[2] else {}
         return {
             "periods": [[s, e, kind] for s, e, kind in rows],
-            "start": rows[0][0] if rows else None,
-            "end": max(e for _, e, _ in rows) if rows else None,
-            "minutes": sum(minutes.values()),
+            "start": session[0] if session else (rows[0][0] if rows else None),
+            "end": session[1] if session else (max(e for _, e, _ in rows) if rows else None),
+            # Time asleep: awake periods inside the night don't count
+            "minutes": sum(v for k, v in minutes.items() if k != "awake"),
             "byType": minutes,
+            "source": source if rows else None,
+            "score": summary.get("score"),
+            "summary": summary,
+        }
+
+    def stress_summary(self, day):
+        start, end = _day_bounds(day)
+        rows = self.db.execute("SELECT end, score FROM stress WHERE end >= ? AND end < ? ORDER BY end",
+                               (start, end)).fetchall()
+        scores = [s for _, s in rows if s]
+        return {
+            "points": [[t - start, s] for t, s in rows if s],
+            "avg": round(sum(scores) / len(scores)) if scores else None,
+            "max": max(scores) if scores else None,
+            "count": len(scores),
         }
 
     # --------------------------------------------------------------- export
-    def export_csv(self, months, sleep_changed=True, totals_changed=True):
+    def export_csv(self, months, sleep_changed=True, totals_changed=True, stress_changed=True):
         for month in sorted(months):
             self._export_month(month)
         if sleep_changed:
             self._export_sleep()
-        if months or sleep_changed or totals_changed:
+        if stress_changed:
+            self._export_stress()
+        if months or sleep_changed or totals_changed or stress_changed:
             self._export_daily()
 
     def _write(self, name, header, rows):
@@ -225,10 +298,35 @@ class HealthStore:
                     [[_iso(r[0])] + ["" if v is None else (round(v, 3) if isinstance(v, float) else v)
                                      for v in r[1:]] for r in rows])
 
+    SESSION_COLUMNS = ("score", "efficiency", "latency", "deep_part", "wake_count", "avg_heart_rate",
+                       "min_heart_rate", "max_heart_rate", "avg_spo2", "min_spo2", "avg_breath_rate", "avg_hrv",
+                       "bed_time", "rising_time")
+
     def _export_sleep(self):
-        rows = self.db.execute("SELECT start, end, type FROM sleep ORDER BY start").fetchall()
-        self._write("sleep.csv", ["start", "end", "minutes", "type"],
-                    [[_iso(s), _iso(e), (e - s) // 60, kind] for s, e, kind in rows])
+        rows = [(s, e, t, "trusleep") for s, e, t in
+                self.db.execute("SELECT start, end, stage FROM sleep_stages")]
+        rows += [(s, e, t, "basic") for s, e, t in self.db.execute("SELECT start, end, type FROM sleep")]
+        rows.sort()
+        self._write("sleep.csv", ["start", "end", "minutes", "type", "source"],
+                    [[_iso(s), _iso(e), (e - s) // 60, kind, src] for s, e, kind, src in rows])
+        sessions = []
+        for start, end, summary in self.db.execute("SELECT start, end, summary FROM sleep_sessions ORDER BY start"):
+            sm = json.loads(summary) if summary else {}
+            values = []
+            for col in self.SESSION_COLUMNS:
+                v = sm.get(col, "")
+                if col in ("bed_time", "rising_time") and v:
+                    v = _iso(v)
+                elif isinstance(v, float):
+                    v = round(v, 1)
+                values.append(v)
+            sessions.append([_iso(start), _iso(end) if end else "", (end - start) // 60 if end else ""] + values)
+        self._write("sleep-sessions.csv", ["fell_asleep", "woke_up", "minutes"] + list(self.SESSION_COLUMNS), sessions)
+
+    def _export_stress(self):
+        rows = self.db.execute("SELECT start, end, score, level FROM stress ORDER BY start").fetchall()
+        self._write("stress.csv", ["start", "end", "score", "level"],
+                    [[_iso(s), _iso(e), score, level] for s, e, score, level in rows])
 
     def _export_daily(self):
         days = {}
@@ -243,16 +341,21 @@ class HealthStore:
         for day, st, cal, dist in self.db.execute("SELECT day, steps, calories, distance FROM totals"):
             d = days.setdefault(day, {"steps": 0, "calories": 0, "distance": 0, "hr": []})
             d.update(steps=st, calories=cal, distance=dist)
+        for (end,) in self.db.execute("SELECT end FROM sleep_sessions WHERE end IS NOT NULL"):
+            days.setdefault(_day(end), {"steps": 0, "calories": 0, "distance": 0, "hr": []})
         rows = []
         for day in sorted(days):
             d = days[day]
             night = self.night(day)
+            stress = self.stress_summary(day)
             hr = d["hr"]
             rows.append([day, d["steps"], int(round(d["calories"])), d["distance"],
                          min(hr) if hr else "", round(sum(hr) / len(hr)) if hr else "", max(hr) if hr else "",
-                         night["minutes"] or "", night["byType"].get("deep", "") or ""])
-        self._write("daily.csv", ["day", "steps", "kcal", "distance_m", "heart_rate_min",
-                                  "heart_rate_avg", "heart_rate_max", "sleep_minutes", "deep_sleep_minutes"], rows)
+                         night["minutes"] or "", night["byType"].get("deep", "") or "",
+                         night["byType"].get("rem", "") or "", night["score"] or "", stress["avg"] or ""])
+        self._write("daily.csv", ["day", "steps", "kcal", "distance_m", "heart_rate_min", "heart_rate_avg",
+                                  "heart_rate_max", "sleep_minutes", "deep_sleep_minutes", "rem_sleep_minutes",
+                                  "sleep_score", "stress_avg"], rows)
 
 
 def _thin(points, step):
