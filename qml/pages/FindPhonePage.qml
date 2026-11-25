@@ -7,6 +7,16 @@ Page {
     id: page
     property var daemon
 
+    // Closes by itself however the ring ended: this button, the watch, the notification or the timeout
+    function closeIfDone() {
+        if (!daemon.findingPhone && page.status === PageStatus.Active) pageStack.pop()
+    }
+    onStatusChanged: closeIfDone()
+    Connections {
+        target: daemon
+        onFindingPhoneChanged: page.closeIfDone()
+    }
+
     Column {
         anchors.centerIn: parent
         width: parent.width - 2 * Theme.horizontalPageMargin
@@ -39,10 +49,7 @@ Page {
         Button {
             anchors.horizontalCenter: parent.horizontalCenter
             text: qsTr("Found it")
-            onClicked: {
-                daemon.stopFindPhone()
-                pageStack.pop()
-            }
+            onClicked: daemon.stopFindPhone()
         }
     }
 }

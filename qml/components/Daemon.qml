@@ -1,10 +1,42 @@
 // WatchBridge - SPDX-License-Identifier: AGPL-3.0-or-later
 // Thin wrapper around the daemon's session bus API. Values arrive as JSON.
 import QtQuick 2.0
+import Sailfish.Silica 1.0
 import Nemo.DBus 2.0
 
 Item {
     id: daemon
+
+    // ----------------------------------------------------------- ring colours
+    // Steps, distance, calories and sleep: the activity rings, their legends and the week and month
+    // charts. "ambience" (the default) derives them from the ambience's highlight colour, so they
+    // change with it; "classic" keeps fixed blue, green, orange and violet.
+    readonly property var classicRingColors: ["#4fb3ff", "#7fd36b", "#ffb347", "#b38cff"]
+    readonly property bool ambienceRings: !settings.health || settings.health.ring_colors !== "classic"
+    readonly property var ringColors: ambienceRings ? ambienceColors(Theme.highlightColor, Theme.colorScheme)
+                                                    : classicRingColors
+    // Hue steps from the ambience colour, in degrees: near enough to belong to it, far enough apart
+    // to tell the rings from each other
+    readonly property var ringHueSteps: [0, 40, 80, -50]
+
+    function ambienceColors(base, scheme) {
+        var r = base.r, g = base.g, b = base.b
+        var max = Math.max(r, g, b), min = Math.min(r, g, b)
+        var h = 0, s = 0, l = (max + min) / 2
+        if (max !== min) {
+            var d = max - min
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+            h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4
+            h /= 6
+        }
+        // Grey ambiences still get colours; keep them readable on light and on dark ambiences
+        s = Math.max(0.5, Math.min(0.85, s))
+        l = scheme === Theme.DarkOnLight ? Math.max(0.35, Math.min(0.5, l)) : Math.max(0.55, Math.min(0.72, l))
+        var out = []
+        for (var i = 0; i < ringHueSteps.length; i++)
+            out.push(Qt.hsla((h + ringHueSteps[i] / 360 + 1) % 1, s, l, 1))
+        return out
+    }
 
     property var status: ({})
     property var settings: ({})
@@ -18,6 +50,8 @@ Item {
     readonly property bool paired: !!status.address
     readonly property bool busy: ["pairing", "connecting", "authenticating", "initializing"].indexOf(watchState) >= 0
     readonly property var weather: status.weather || null
+    // The watch is making the phone ring
+    readonly property bool findingPhone: !!status.findingPhone
 
     signal message(string level, string text)
 
@@ -52,9 +86,38 @@ Item {
     function syncTime() { _call("SyncTime") }
     function stopFindPhone() { _call("StopFindPhone") }
     function syncHealth() { _call("SyncHealth") }
+    function syncCalendar() { _call("SyncCalendar") }
     // Summary for one local date ("yyyy-MM-dd"), delivered to cb as an object
     function getHealth(day, cb) {
         _call("GetHealth", [{ "type": "s", "value": day }], function(json) { cb(JSON.parse(json)) })
+    }
+    // The watch's battery over the last `days` days: { points: [[time, level], ...] }
+    function getBatteryHistory(days, cb) {
+        _call("GetBatteryHistory", [{ "type": "i", "value": days }], function(json) { cb(JSON.parse(json)) })
+    }
+    // Alarms on the watch (status.alarms holds the list as last read)
+    function refreshAlarms() { _call("RefreshAlarms") }
+    function setAlarms(list) { _call("SetAlarms", [{ "type": "s", "value": JSON.stringify(list) }]) }
+    // Week overview (Monday to Sunday) for the week holding `day` ("yyyy-MM-dd")
+    function getHealthWeek(day, cb) {
+        _call("GetHealthWeek", [{ "type": "s", "value": day }], function(json) { cb(JSON.parse(json)) })
+    }
+    // Month overview ("yyyy-MM"): one entry per day with data, plus averages
+    function getHealthMonth(month, cb) {
+        _call("GetHealthMonth", [{ "type": "s", "value": month }], function(json) { cb(JSON.parse(json)) })
+    }
+
+    // Watch faces
+    function refreshWatchfaces() { _call("RefreshWatchfaces") }
+    function inspectWatchface(path, cb) {
+        _call("InspectWatchface", [{ "type": "s", "value": path }], function(json) { cb(JSON.parse(json)) })
+    }
+    function installWatchface(path) { _call("InstallWatchface", [{ "type": "s", "value": path }]) }
+    function setWatchface(file, version) {
+        _call("SetWatchface", [{ "type": "s", "value": file }, { "type": "s", "value": version }])
+    }
+    function deleteWatchface(file, version) {
+        _call("DeleteWatchface", [{ "type": "s", "value": file }, { "type": "s", "value": version }])
     }
 
     // Merge a partial settings object, e.g. { "weather": { "fahrenheit": true } }

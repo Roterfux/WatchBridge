@@ -36,7 +36,9 @@ CLOSED_EXPIRED = 1
 CLOSED_DISMISSED = 2
 CLOSED_BY_APP = 3
 
-_PENDING_MAX_AGE = 30      # seconds to wait for lipstick's answer to a Notify call
+MISSED_CALL_CATEGORY = "x-nemo.call.missed"  # posted by commhistoryd, summary = caller
+
+_PENDING_MAX_AGE = 30     # seconds to wait for lipstick's answer to a Notify call
 _KNOWN_MAX = 300           # forwarded notifications remembered by id
 
 # Categories that are device status chatter rather than messages
@@ -67,6 +69,7 @@ class Notification:
         # of the notification it replaces, so the watch shows it in place of the old one
         self.watch_key = "%s:%d:%s" % (app_name, replaces_id, summary)
         self.phone_id = None  # lipstick's id, from its answer to Notify
+        self.forwarded = False
 
     @property
     def category(self):
@@ -107,11 +110,15 @@ MODE_SELECTED = "selected"  # only allowed_apps
 
 
 class NotificationMonitor:
-    def __init__(self, on_notification, own_app_name="WatchBridge", on_app_seen=None, on_closed=None):
+    def __init__(self, on_notification, own_app_name="WatchBridge", on_app_seen=None, on_closed=None,
+                 on_missed_call=None):
         self.on_notification = on_notification
         # Called with the forwarded Notification when it is dismissed on the phone or
         # closed by its app (e.g. the message was read)
         self.on_closed = on_closed or (lambda n: None)
+        # Called with (Notification, True) for every missed-call notification, forwarded or
+        # not, and with (Notification, False) once the phone clears it
+        self.on_missed_call = on_missed_call or (lambda n, active: None)
         # Called with (app_name, package) for every app that sends a notification,
         # filtered or not, so the settings can offer it in the app lists
         self.on_app_seen = on_app_seen or (lambda app_name, package: None)
@@ -165,11 +172,17 @@ class NotificationMonitor:
                 self.on_app_seen(n.app_name, n.package)
             accepted = self._accept(n)
             log.debug("Notification from %r (%s): %s", n.app_name, n.category, "forward" if accepted else "skip")
+            n.forwarded = accepted
+            missed = n.category == MISSED_CALL_CATEGORY
             if accepted:
                 previous = self._known.get(n.replaces_id) if n.replaces_id else None
                 if previous is not None:
                     n.watch_key = previous.watch_key
-                self._remember_call(message, n)
+            if accepted or missed:
+                self._remember_call(message, n)  # to learn its id, and so when it is closed
+            if missed:
+                self.on_missed_call(n, True)
+            if accepted:
                 self.on_notification(n)
         except Exception:  # noqa: BLE001 - never let the filter raise into libdbus
             log.exception("Notification filter error")
@@ -203,7 +216,10 @@ class NotificationMonitor:
             return
         log.debug("Notification %d from %r closed (reason %d)", n.phone_id, n.app_name, reason)
         if reason in (CLOSED_DISMISSED, CLOSED_BY_APP):
-            self.on_closed(n)
+            if n.category == MISSED_CALL_CATEGORY:
+                self.on_missed_call(n, False)
+            if n.forwarded:
+                self.on_closed(n)
 
     def _accept(self, n):
         if not n.summary and not n.body:

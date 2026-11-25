@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS stress (
     score INTEGER,                      -- 1..99
     level INTEGER
 );
+CREATE TABLE IF NOT EXISTS battery (       -- the watch's battery level when it changed
+    time INTEGER PRIMARY KEY,
+    level INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS totals (
     day TEXT PRIMARY KEY,               -- local date, YYYY-MM-DD
     steps INTEGER, calories INTEGER, distance INTEGER,
@@ -70,6 +74,8 @@ ACTIVITY_FIELDS = ("steps", "kcal", "distance", "heart_rate", "spo2", "resting_h
 
 # A night belongs to the day it ends on; sleep that starts after 18:00 counts for the next day
 NIGHT_SPLIT_HOUR = 18
+
+FAR_FUTURE = 4102444800     # 2100-01-01, the open end of a date range
 
 
 def default_folder():
@@ -255,6 +261,29 @@ class HealthStore:
             "summary": summary,
         }
 
+    # -------------------------------------------------------------- battery
+    BATTERY_REPEAT = 30 * 60    # an unchanged level is stored again at most this often
+
+    def add_battery(self, level, now=None):
+        """Records the watch's battery level. Returns True if a row was written."""
+        now = int(now if now is not None else time.time())
+        if not 0 <= level <= 100:
+            return False
+        last = self.db.execute("SELECT time, level FROM battery ORDER BY time DESC LIMIT 1").fetchone()
+        if last and last[1] == level and now - last[0] < self.BATTERY_REPEAT:
+            return False
+        self.db.execute("INSERT OR REPLACE INTO battery VALUES (?, ?)", (now, level))
+        self.db.commit()
+        return True
+
+    def battery_history(self, since):
+        """[[unix time, level], ...] since `since`, with the last level before it as the start."""
+        rows = self.db.execute("SELECT time, level FROM battery WHERE time >= ? ORDER BY time", (since,)).fetchall()
+        before = self.db.execute("SELECT time, level FROM battery WHERE time < ? ORDER BY time DESC LIMIT 1",
+                                 (since,)).fetchone()
+        points = [[since, before[1]]] if before else []
+        return points + [[t, lv] for t, lv in rows]
+
     def stress_summary(self, day):
         start, end = _day_bounds(day)
         rows = self.db.execute("SELECT end, score FROM stress WHERE end >= ? AND end < ? ORDER BY end",
@@ -328,31 +357,122 @@ class HealthStore:
         self._write("stress.csv", ["start", "end", "score", "level"],
                     [[_iso(s), _iso(e), score, level] for s, e, score, level in rows])
 
-    def _export_daily(self):
+    def daily(self, lo=0, hi=FAR_FUTURE):
+        """One summary per local date with any data, for days between unix times lo and hi.
+
+        Shared by daily.csv and the month overview. Missing values are None.
+        """
+        first, last = _day(lo), _day(hi - 1)
         days = {}
-        for t, st, cal, dist, hr in self.db.execute(
-                "SELECT time, steps, kcal, distance, heart_rate FROM activity ORDER BY time"):
-            d = days.setdefault(_day(t), {"steps": 0, "calories": 0, "distance": 0, "hr": []})
+
+        def day_of(key):
+            return days.setdefault(key, {"steps": 0, "calories": 0, "distance": 0, "hr": [], "resting": []})
+
+        for t, st, cal, dist, hr, rhr in self.db.execute(
+                "SELECT time, steps, kcal, distance, heart_rate, resting_heart_rate FROM activity "
+                "WHERE time >= ? AND time < ? ORDER BY time", (lo, hi)):
+            d = day_of(_day(t))
             d["steps"] += st or 0
             d["calories"] += cal or 0
             d["distance"] += dist or 0
             if hr:
                 d["hr"].append(hr)
-        for day, st, cal, dist in self.db.execute("SELECT day, steps, calories, distance FROM totals"):
-            d = days.setdefault(day, {"steps": 0, "calories": 0, "distance": 0, "hr": []})
-            d.update(steps=st, calories=cal, distance=dist)
-        for (end,) in self.db.execute("SELECT end FROM sleep_sessions WHERE end IS NOT NULL"):
-            days.setdefault(_day(end), {"steps": 0, "calories": 0, "distance": 0, "hr": []})
-        rows = []
+            if rhr:
+                d["resting"].append(rhr)
+        # The watch's own totals are authoritative for the day they were read
+        for day, st, cal, dist in self.db.execute(
+                "SELECT day, steps, calories, distance FROM totals WHERE day >= ? AND day <= ?", (first, last)):
+            day_of(day).update(steps=st, calories=cal, distance=dist)
+        # Days that only have a night or stress readings
+        for (end,) in self.db.execute("SELECT end FROM sleep_sessions WHERE end >= ? AND end < ?", (lo, hi)):
+            day_of(_day(end))
+        for (end,) in self.db.execute("SELECT end FROM sleep_stages WHERE end >= ? AND end < ?", (lo, hi)):
+            day_of(_day(end))
+        for (end,) in self.db.execute("SELECT end FROM stress WHERE end >= ? AND end < ?", (lo, hi)):
+            day_of(_day(end))
+
+        out = []
         for day in sorted(days):
             d = days[day]
             night = self.night(day)
             stress = self.stress_summary(day)
             hr = d["hr"]
-            rows.append([day, d["steps"], int(round(d["calories"])), d["distance"],
-                         min(hr) if hr else "", round(sum(hr) / len(hr)) if hr else "", max(hr) if hr else "",
-                         night["minutes"] or "", night["byType"].get("deep", "") or "",
-                         night["byType"].get("rem", "") or "", night["score"] or "", stress["avg"] or ""])
+            out.append({
+                "day": day,
+                "steps": d["steps"] or 0,
+                "calories": int(round(d["calories"] or 0)),
+                "distance": d["distance"] or 0,
+                "hrMin": min(hr) if hr else None,
+                "hrAvg": round(sum(hr) / len(hr)) if hr else None,
+                "hrMax": max(hr) if hr else None,
+                "resting": min(d["resting"]) if d["resting"] else None,
+                "sleep": night["minutes"] or None,
+                "deep": night["byType"].get("deep") or None,
+                "rem": night["byType"].get("rem") or None,
+                "score": night["score"],
+                "stress": stress["avg"],
+            })
+        return out
+
+    def month_summary(self, month):
+        """The month overview: one entry per day with data, plus averages ("YYYY-MM")."""
+        first = datetime.datetime.strptime(month + "-01", "%Y-%m-%d")
+        nxt = (first + datetime.timedelta(days=32)).replace(day=1)
+        out = self.range_summary(first, (nxt - first).days)
+        out.update(month=month, daysInMonth=out["daysInRange"])
+        return out
+
+    def week_summary(self, day):
+        """The week overview, Monday to Sunday, for the week that holds `day` ("YYYY-MM-DD")."""
+        d = datetime.datetime.strptime(day, "%Y-%m-%d")
+        first = d - datetime.timedelta(days=d.weekday())
+        out = self.range_summary(first, 7)
+        out["week"] = out["start"]
+        return out
+
+    def range_summary(self, first, count):
+        """`count` days from the local midnight that starts `first` (a datetime): one entry per
+        day with data, plus averages."""
+        first = first.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = first + datetime.timedelta(days=count)
+        days = self.daily(int(time.mktime(first.timetuple())), int(time.mktime(end.timetuple())))
+
+        def values(key):
+            return [d[key] for d in days if d[key] is not None]
+
+        def avg(key):
+            v = values(key)
+            return round(sum(v) / len(v)) if v else None
+
+        active = [d for d in days if d["steps"] > 0]
+        return {
+            "start": first.strftime("%Y-%m-%d"),
+            "daysInRange": count,
+            "days": days,
+            "summary": {
+                "days": len(days),
+                # Averages over days that have the value, so missing days don't pull them down
+                "steps": round(sum(d["steps"] for d in active) / len(active)) if active else None,
+                "stepsTotal": sum(d["steps"] for d in days),
+                "distanceTotal": sum(d["distance"] for d in days),
+                "calories": round(sum(d["calories"] for d in active) / len(active)) if active else None,
+                "sleep": avg("sleep"),
+                "deep": avg("deep"),
+                "score": avg("score"),
+                "hrAvg": avg("hrAvg"),
+                "resting": avg("resting"),
+                "restingMin": min(values("resting")) if values("resting") else None,
+                "stress": avg("stress"),
+            },
+        }
+
+    def _export_daily(self):
+        def cell(v):
+            return "" if v is None else v
+
+        rows = [[d["day"], d["steps"], d["calories"], d["distance"], cell(d["hrMin"]), cell(d["hrAvg"]),
+                 cell(d["hrMax"]), cell(d["sleep"]), cell(d["deep"]), cell(d["rem"]), d["score"] or "",
+                 d["stress"] or ""] for d in self.daily()]
         self._write("daily.csv", ["day", "steps", "kcal", "distance_m", "heart_rate_min", "heart_rate_avg",
                                   "heart_rate_max", "sleep_minutes", "deep_sleep_minutes", "rem_sleep_minutes",
                                   "sleep_score", "stress_avg"], rows)

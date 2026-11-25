@@ -3,7 +3,8 @@
 #
 # Ported from Gadgetbridge (devices/huawei/packets/FitnessData.java, the requests
 # GetFitnessTotalsRequest, GetStepDataCountRequest, GetStepDataRequest,
-# GetSleepDataCountRequest, GetSleepDataRequest and HuaweiSampleProvider.java),
+# GetSleepDataCountRequest, GetSleepDataRequest, SendFitnessUserInfoRequest,
+# SetActivityReminderRequest, SetAutomaticSpoRequest, SetSpO2LowAlert and HuaweiSampleProvider.java),
 # Copyright (C) 2024 Damien Gaignon, Martin.JM, Vitalii Tomin.
 # Translated to Python and modified for WatchBridge, 2026. See NOTICE.md.
 """FitnessData service (0x07): daily totals, per-minute activity and basic sleep.
@@ -62,6 +63,15 @@ def automatic_heart_rate(enabled):
     return Packet(SERVICE, 0x17, TLV().put_byte(0x01, 1 if enabled else 0))
 
 
+REALTIME_HEART_RATE = 0x1C
+
+
+def realtime_heart_rate(enabled):
+    """FitnessData.EnableRealtimeHeartRate (0x07/0x1c): continuous measurement in real-time mode
+    (about every second) instead of the smart mode of 0x07/0x17, which measures less often at rest."""
+    return Packet(SERVICE, REALTIME_HEART_RATE, TLV().put_byte(0x01, 1 if enabled else 0))
+
+
 def notify_rest_heart_rate_capability():
     """FitnessData.NotifyRestHeartRate (0x07/0x23): the phone can take resting heart rate.
     Gadgetbridge's put(0x01, 0x01) is a Java int, so the value is four bytes."""
@@ -71,6 +81,67 @@ def notify_rest_heart_rate_capability():
 def notify_heart_rate_capability():
     """Workout.NotifyHeartRate (0x17/0x17): the phone trusts the watch's heart rate."""
     return Packet(0x17, 0x17, TLV().put_int(0x01, 0x03))
+
+
+USER_INFO = 0x02
+ACTIVITY_REMINDER = 0x07
+AUTOMATIC_SPO2 = 0x24
+LOW_SPO2_ALERT = 0x25
+
+GENDER_MALE, GENDER_FEMALE, GENDER_UNKNOWN = 1, 2, 3
+# Stride factors Gadgetbridge sends with the height ("bmi" walk/run)
+WALK_CF, RUN_CF = 0.42, 0.83
+
+
+def _java_round(x):
+    """Math.round: halves go up, unlike Python's round()."""
+    return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
+
+
+def user_info(height_cm, weight_kg, age, birthday, gender, unknown_gender_supported, precision_weight_supported):
+    """FitnessData.UserInfo (0x07/0x02): the body the watch computes calories and distance for.
+
+    birthday is (year, month, day). Byte-sized values are sent the way Java's (byte) casts them.
+    """
+    height = int(height_cm)
+    t = (TLV().put_byte(0x01, height)
+         .put_byte(0x02, int(weight_kg))
+         .put_byte(0x03, int(age)))
+    year, month, day = birthday
+    t.put_int(0x04, (year << 16) + (month << 8) + day)
+    if gender in (GENDER_MALE, GENDER_FEMALE) or (gender == GENDER_UNKNOWN and unknown_gender_supported):
+        t.put_byte(0x05, gender)
+    t.put_byte(0x06, _java_round(WALK_CF * height)).put_byte(0x07, _java_round(RUN_CF * height))
+    if precision_weight_supported:
+        t.put_int(0x0B, _java_round(weight_kg * 100))
+    return Packet(SERVICE, USER_INFO, t)
+
+
+def activity_reminder(enabled, interval_minutes, start, end, days):
+    """FitnessData.ActivityReminder (0x07/0x07): the move reminder after sitting too long.
+
+    start and end are (hour, minute); days is a weekday mask (Monday = bit 0 ... Sunday = bit 6).
+    """
+    return Packet(SERVICE, ACTIVITY_REMINDER, TLV().put(0x81, TLV()
+                                                        .put(0x02, bool(enabled))
+                                                        .put_byte(0x03, int(interval_minutes))
+                                                        .put(0x04, bytes([start[0] % 24, start[1] % 60]))
+                                                        .put(0x05, bytes([end[0] % 24, end[1] % 60]))
+                                                        .put_byte(0x06, int(days) & 0x7F)))
+
+
+def automatic_spo2(enabled):
+    """FitnessData.EnableAutomaticSpo (0x07/0x24): blood oxygen measured through the day.
+    The watch does not answer it (Gadgetbridge: addToResponse = false)."""
+    return Packet(SERVICE, AUTOMATIC_SPO2, TLV().put(0x01, bool(enabled)))
+
+
+def low_spo2_alert(threshold):
+    """FitnessData.LowSpoAlert (0x07/0x25): warn below threshold %, 0 = off. Not answered either."""
+    t = TLV().put(0x01, threshold > 0)
+    if threshold > 0:
+        t.put_byte(0x02, int(threshold))
+    return Packet(SERVICE, LOW_SPO2_ALERT, t)
 
 
 # --- responses -----------------------------------------------------------------

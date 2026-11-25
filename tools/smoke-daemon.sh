@@ -22,6 +22,12 @@ FAIL=0
 for m in GetStatus GetSettings GetDevices StartScan StopScan Connect Disconnect SendTestNotification \
          RefreshWeather SyncTime StopFindPhone "SetSettings '{\"weather\":{\"fahrenheit\":true}}'" \
          SyncHealth "GetHealth ''" "GetHealth '2026-11-04'" "GetHealth 'not-a-date'" \
+         "GetHealthMonth ''" "GetHealthMonth '2026-02'" "GetHealthMonth 'nope'" \
+         "GetHealthWeek ''" "GetHealthWeek '2026-12-31'" "GetHealthWeek 'nope'" \
+         "GetBatteryHistory 7" RefreshAlarms "SetAlarms '[]'" \
+         "SetSettings '{\"face_schedule\":{\"enabled\":true,\"night\":{\"file\":\"1\",\"version\":\"1.0.0\"}}}'" \
+         "SetSettings '{\"profile\":{\"height\":180},\"watch\":{\"move_reminder\":{\"enabled\":true}}}'" \
+         "SetSettings '{\"health\":{\"automatic_spo2\":true,\"low_spo2_alert\":90}}'" \
          "SetSettings '{\"health\":{\"interval_hours\":3}}'" \
          "InspectWatchface '/nonexistent.hwt'" RefreshWatchfaces SyncCalendar \
          "Forget false" "Pair 'AA:BB:CC:DD:EE:FF' 'HUAWEI WATCH GT 5'"; do

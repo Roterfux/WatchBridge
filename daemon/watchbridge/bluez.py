@@ -255,9 +255,11 @@ class Bluez:
 
         def failed(e):
             name = e.get_dbus_name()
-            if "AlreadyConnected" in name or "InProgress" in name:
+            if "InProgress" in name:
                 log.info("ConnectProfile: %s", name)
                 return
+            # AlreadyConnected without a socket is a stale connection: waiting for it would hang in
+            # "connecting", so it falls back like any other error
             if self._last_connection.get(address.upper(), 0) >= started:
                 # NewConnection already handed us the socket; the reply just came late
                 # (e.g. a NoReply timeout). A fallback now would replace a working link.
@@ -284,8 +286,10 @@ class Bluez:
         threading.Thread(target=work, daemon=True, name="rfcomm-connect").start()
 
     def disconnect_profile(self, address):
+        if self.adapter_path is None:
+            return
         try:
-            self._device(address).DisconnectProfile(HUAWEI_SPP_UUID)
+            self._device(address).DisconnectProfile(HUAWEI_SPP_UUID, timeout=10)
         except dbus.DBusException as e:
             log.debug("DisconnectProfile: %s", e)
 

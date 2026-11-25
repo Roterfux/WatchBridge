@@ -36,6 +36,9 @@ DEFAULTS = {
         "enabled": True,         # show incoming calls on the watch (reject / answer there)
         "caller_names": True,    # look the caller up in Contacts (Sailfish asks for permission)
     },
+    "calendar": {
+        "enabled": True,         # show the phone's calendar in the watch's calendar app
+    },
     "weather": {
         "enabled": True,
         "location": "",
@@ -47,14 +50,40 @@ DEFAULTS = {
     "watch": {
         "time_24h": True,
         "date_format": 3,  # 1 = Y/M/D, 2 = M/D/Y, 3 = D/M/Y
+        # Reminder to move after sitting for `interval` minutes, between start and end, on `days`
+        # (Monday = bit 0 ... Sunday = bit 6). enabled None = leave the watch's own setting alone.
+        "move_reminder": {"enabled": None, "interval": 60, "start": "08:00", "end": "22:00", "days": 0x1F},
+        "low_battery_warning": 20,  # phone notification at this watch battery %, 0 = off
     },
+    # One watch face by day and one at night, switched at these local times while connected.
+    # day/night: {"file", "version", "name"} of a face on the watch, or None.
+    "face_schedule": {"enabled": False, "day": None, "night": None, "day_start": "07:00", "night_start": "21:00"},
+    # Fewer wake-ups and transfers: "phone" = while the phone's battery saver is on, "always", "off".
+    # Health sync at most every 12 h, battery every hour, weather every 3 h, calendar every 2 h,
+    # a lost watch tried every 30 min.
+    "power_save": {"mode": "phone"},
+    # No notifications to the watch while the phone's do not disturb is on (follow_phone) and/or
+    # daily between start and end (scheduled). calls: incoming calls still reach the watch.
+    # The GT 5 has no do-not-disturb command (0x01/0x0a), so this is done on the phone.
+    "do_not_disturb": {"follow_phone": True, "scheduled": False, "start": "22:00", "end": "07:00", "calls": True},
+    # Body data for the watch's calorie and distance estimates; sent once height, weight and
+    # birthday (YYYY-MM-DD) are filled in. gender: male, female or unknown.
+    "profile": {"height": 0, "weight": 0, "birthday": "", "gender": "unknown"},
     "health": {
         "enabled": True,
         "interval_hours": 6,     # automatic sync while connected
         "first_sync_days": 7,    # how far back the very first sync reaches
         "continuous_heart_rate": None,  # None = leave the watch's setting alone, else True/False
+        # With continuous heart rate on: "smart" (less often at rest, about every 10 min) or "realtime"
+        # (about every second); None = only switch it on or off, as before
+        "heart_rate_mode": None,
+        "automatic_spo2": None,         # blood oxygen through the day; None = leave it to the watch
+        "low_spo2_alert": 0,            # the watch warns below this %, 0 = off
         "folder": "",            # empty = ~/Documents/WatchBridge
         "last_sync": 0,          # maintained by the daemon
+        # Daily goals for the activity rings (Gadgetbridge's defaults); distance in m, sleep in min
+        "goals": {"steps": 8000, "distance": 5000, "calories": 350, "sleep": 420},
+        "ring_colors": "ambience",  # or "classic": fixed blue, green, orange and violet
     },
 }
 

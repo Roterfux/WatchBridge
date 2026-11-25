@@ -48,7 +48,7 @@ class Recorder(D.Listener):
         if state in (D.STATE_AUTH_FAILED, D.STATE_DISCONNECTED):
             self.failed.set()
 
-    def on_battery(self, level):
+    def on_battery(self, level, charging=None):
         self.battery = level
 
     def on_device_info(self, info):

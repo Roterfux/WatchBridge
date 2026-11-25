@@ -2,8 +2,8 @@
 
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
-Version:    0.6.0
-Release:    2
+Version:    0.9.0
+Release:    4
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -13,6 +13,8 @@ Requires:   sailfishsilica-qt5 >= 1.1.0
 Requires:   mapplauncherd-booster-silica-qt5
 Requires:   nemo-qml-plugin-dbus-qt5
 Requires:   nemo-qml-plugin-notifications-qt5
+Requires:   nemo-qml-plugin-filemanager
+Requires:   nemo-qml-plugin-configuration-qt5
 Requires:   qt5-qtdeclarative-import-positioning
 Requires:   qt5-qtgraphicaleffects
 # Daemon
@@ -99,6 +101,93 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Wed Nov 25 2026 WatchBridge contributors - 0.9.0-4
+- Power saving: with the phone's battery saver (or always) health sync at most every 12 h,
+  watch battery hourly, weather every 3 h, calendar every 2 h, lost watch every 30 min.
+- Do not disturb: no notifications to the watch while the phone's do not disturb is on
+  and/or daily at set times; calls can still come through.
+- Heart rate mode: smart (about every 10 min at rest) or real-time.
+- Move reminder up to every 3 hours.
+- Day/night watch faces: one wake-up at the switch instead of a check every minute.
+* Thu Nov 19 2026 WatchBridge contributors - 0.9.0-3
+- A lost watch is tried again every 10 minutes for as long as it takes (after quicker first
+  retries), and an attempt that hung (stuck at "Connecting" or in the setup) is started over.
+  Tapping Disconnect still keeps it disconnected until Connect.
+* Sun Nov 15 2026 WatchBridge contributors - 0.9.0-2
+- Installing a watch face opens the folder used last time, and keeps the chosen sort order
+  (name, date or size, either way round)
+* Sun Nov 15 2026 WatchBridge contributors - 0.9.0-1
+- Watch battery stays current: the GT 5 does not announce level changes, so it is read every
+  15 minutes while connected; charging start and stop come from the watch's battery events
+  ("· charging" on the main page, no low-battery warning while charging)
+- Day and night watch faces (Watch faces page): long-press a face to show it by day or at night,
+  with the switch times; changes while the watch is connected. Built-in faces are numbered.
+* Sat Nov 14 2026 WatchBridge contributors - 0.8.2-1
+- Ring colours follow the ambience (Settings > Health > Ring colours; "Classic" keeps the fixed ones),
+  also in the legends and the week and month charts
+- The week overview opened from the day page was empty: it loaded before the page had the daemon
+
+* Sat Nov 14 2026 WatchBridge contributors - 0.8.1-1
+- Week overview (Health page > pull-down > Week overview), Monday to Sunday, with each day's
+  steps, sleep and sleep score under the bars; the overview page switches between week and month
+
+* Fri Nov 13 2026 WatchBridge contributors - 0.8.0-2
+- Main page: the Alarms row shows its text again
+- Alarm editor: the chosen repeat days are highlighted
+
+* Fri Nov 13 2026 WatchBridge contributors - 0.8.0-1
+- Alarms: see, add, change, switch and delete the watch's alarms (main page > Alarms)
+- Profile (height, weight, birthday, sex) for the watch's calorie and distance estimates
+- Move reminder: on/off, after how long, between which hours and on which days
+- Automatic blood oxygen measurement and a low blood oxygen warning on the watch
+- Watch battery: a phone notification when it gets low, and a battery history chart
+- Charts no longer disappear after the app was in the background
+
+* Tue Nov 10 2026 WatchBridge contributors - 0.7.0-1
+- Month overview (Health page > pull-down > Month overview): steps, sleep with deep sleep,
+  heart rate range with resting heart rate, and stress per day, with averages and goal days;
+  tap a day to open it
+
+* Mon Nov 09 2026 WatchBridge contributors - 0.6.0-11
+- Heart-rate line drawn in the same red as "Awake" again: after the first paint it took the grid
+  colour, through a Qt 5.6 Canvas bug with colours given as text. All charts now use colour objects.
+
+* Mon Nov 09 2026 WatchBridge contributors - 0.6.0-10
+- Main page: Reconnect button removed (Connect and Disconnect remain in the pull-down menu, and
+  reconnecting releases the old connection on its own since 0.6.0-7)
+
+* Mon Nov 09 2026 WatchBridge contributors - 0.6.0-9
+- Main page: model, firmware, battery and Bluetooth address moved to the bottom ("Watch details")
+
+* Sun Nov 08 2026 WatchBridge contributors - 0.6.0-8
+- Weather: one failed download (for example no network yet after the phone starts) stopped all
+  later updates until the service restarted; the error is now shown and the download retried
+  after 2 minutes
+
+* Sun Nov 08 2026 WatchBridge contributors - 0.6.0-7
+- Reconnecting works like Disconnect + Connect: after a lost link the old Bluetooth connection is
+  released first, so BlueZ no longer answers "already connected" while no connection arrives
+- A connection BlueZ still reports as open but never delivers no longer leaves the app in "Connecting"
+
+* Sun Nov 08 2026 WatchBridge contributors - 0.6.0-6
+- Main page: the health section (today's steps) comes before the watch details and Watch faces
+
+* Sun Nov 08 2026 WatchBridge contributors - 0.6.0-5
+- Activity rings for the daily goals (steps, distance, calories, sleep) on the health page,
+  and small ones next to the health summary on the main page
+- Goals can be set in Settings > Health
+
+* Sat Nov 07 2026 WatchBridge contributors - 0.6.0-4
+- Find my phone makes a sound: the request went to the session bus, but ngfd is on the system bus
+- It now plays the alarm sound, which has a fixed full volume, so that a silent phone rings too
+
+* Sat Nov 07 2026 WatchBridge contributors - 0.6.0-3
+- Find my phone works with the app closed: a notification appears with the ring, and tapping
+  it stops the ring. The "Here I am!" page opens and closes by itself, however the ring ends
+- When the ring times out the watch is told too, and an old timer can no longer cut a new ring short
+- The "Reconnect" button moved from the settings to the top of the main page, under the
+  connection status. "Sync time" stays in the settings
+
 * Thu Nov 05 2026 WatchBridge contributors - 0.6.0-2
 - The "Sync time" and "Reconnect" buttons moved from the main page to the settings (Connection)
 

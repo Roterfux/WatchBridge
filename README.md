@@ -33,7 +33,7 @@ The watch protocol is a Python port of the Huawei support in
 - **Watch faces:** see the faces installed on the watch, switch between them, delete downloaded ones, and install
   new ones from .hwt files (for example faces you made with Huawei's Watchface Studio). The app checks that a
   face was made for the watch's screen before sending it.
-- **Extras:** time and time-zone sync, battery level, "find my phone" (the watch makes the phone ring),
+- **Extras:** time and time-zone sync, battery level, "find my phone" (the watch makes the phone ring for 30 seconds, even with the app closed; stop it on the watch or from the notification),
   automatic reconnect, and a live status cover
 
 ## Status

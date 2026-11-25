@@ -214,6 +214,60 @@ class TestHealthStore(unittest.TestCase):
         with open(os.path.join(self.folder, "sleep.csv"), encoding="utf-8") as f:
             self.assertEqual([r["type"] for r in csv.DictReader(f)], ["light", "other-0x01"])
 
+    def test_month_summary(self):
+        import datetime
+        samples = [{"time": self.t0 + 60 * i, "steps": 10, "heart_rate": 60 + i, "resting_heart_rate": 55}
+                   for i in range(30)]
+        sleep = [(self.t0 - 7 * 3600, self.t0 - 3 * 3600, 0x06)]
+        self.store.add_sync_result(self.result(samples, sleep), now=self.t0)
+        month = self.day[:7]
+        first = datetime.date(int(month[:4]), int(month[5:]), 1)
+        after = (first + datetime.timedelta(days=32)).replace(day=1)
+        before = first - datetime.timedelta(days=1)
+        other = (first if self.day != first.isoformat() else first + datetime.timedelta(days=1)).isoformat()
+        # A day with only the watch's totals, and two just outside the month
+        for day, steps in ((other, 9000), (after.isoformat(), 1), (before.isoformat(), 1)):
+            self.store.db.execute("INSERT INTO totals VALUES (?, ?, 400, 6000, 0)", (day, steps))
+
+        m = self.store.month_summary(month)
+        self.assertEqual(m["daysInMonth"], (after - first).days)
+        self.assertEqual([d["day"] for d in m["days"]], sorted([self.day, other]))
+        today = next(d for d in m["days"] if d["day"] == self.day)
+        self.assertEqual((today["steps"], today["hrMin"], today["hrMax"], today["resting"], today["sleep"]),
+                         (300, 60, 89, 55, 240))
+        only_totals = next(d for d in m["days"] if d["day"] == other)
+        self.assertEqual((only_totals["steps"], only_totals["sleep"], only_totals["hrAvg"]), (9000, None, None))
+        s = m["summary"]
+        # Averages only over days that have the value
+        self.assertEqual((s["steps"], s["stepsTotal"], s["sleep"], s["resting"], s["days"]), (4650, 9300, 240, 55, 2))
+
+    def test_week_summary(self):
+        import datetime
+        self.store.add_sync_result(self.result([{"time": self.t0, "steps": 10}]), now=self.t0)
+        today = datetime.date(*time.localtime(self.t0)[:3])
+        monday = today - datetime.timedelta(days=today.weekday())
+        sunday = monday + datetime.timedelta(days=6)
+        # The Sunday before and the Monday after belong to other weeks
+        for day, steps in ((sunday.isoformat(), 5000), ((monday - datetime.timedelta(days=1)).isoformat(), 1),
+                           ((sunday + datetime.timedelta(days=1)).isoformat(), 1)):
+            self.store.db.execute("INSERT OR REPLACE INTO totals VALUES (?, ?, 0, 0, 0)", (day, steps))
+        for any_day in (monday, today, sunday):
+            w = self.store.week_summary(any_day.isoformat())
+            self.assertEqual((w["week"], w["daysInRange"]), (monday.isoformat(), 7))
+            self.assertEqual(sorted({d["day"] for d in w["days"]}), sorted({self.day, sunday.isoformat()}))
+
+    def test_week_across_the_new_year(self):
+        w = self.store.week_summary("2026-12-31")     # a Thursday
+        self.assertEqual((w["week"], w["days"]), ("2026-12-28", []))
+        with self.assertRaises(ValueError):
+            self.store.week_summary("not-a-day")
+
+    def test_empty_and_invalid_month(self):
+        m = self.store.month_summary("2001-02")
+        self.assertEqual((m["days"], m["daysInMonth"], m["summary"]["steps"], m["summary"]["sleep"]), ([], 28, None, None))
+        with self.assertRaises(ValueError):
+            self.store.month_summary("not-a-month")
+
     def test_watch_totals_win_for_their_day(self):
         self.store.add_sync_result(self.result([{"time": self.t0, "steps": 10}],
                                                totals={"steps": 8000, "calories": 300, "distance": 5000}), now=self.t0)

@@ -12,12 +12,13 @@ ApplicationWindow {
 
     Daemon {
         id: watchDaemon
-        onMessage: {
-            if (level === "findphone") {
+        onFindingPhoneChanged: {
+            if (findingPhone) {
                 pageStack.push(Qt.resolvedUrl("pages/FindPhonePage.qml"), { daemon: watchDaemon })
                 app.activate()
-                return
             }
+        }
+        onMessage: {
             banner.body = text
             banner.previewBody = text
             banner.publish()

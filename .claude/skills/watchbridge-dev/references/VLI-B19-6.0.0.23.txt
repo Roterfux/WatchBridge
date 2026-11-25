@@ -1,0 +1,78 @@
+Huawei Watch GT 5 (model Vili-B19F, device name VLI-B19), firmware 6.0.0.23(SP10C00M06)
+Recorded 2026-11-04 from the daemon log ("Supported commands:" / "Expand capabilities:").
+
+Link params: protocol 2, slice size 1022, MTU 1007, auth version 1, device support type 4,
+auth algo 0, encrypt method 0 (=> AES-GCM because support type 4). Huawei SPP on RFCOMM channel 16.
+
+Supported commands (service: commands, hex):
+01: 04 07 08 0d 0e 11 13 1d 21 29 2a 2b 31 30 35 37
+02: 01 04 06 08
+04: 01
+07: 01 03 07 09 0a 0e 13 16 17 18 1c 1d 1e 21 22 23 24 25 28 29 06 1f
+08: 01 03
+09: 01 0c 0d 0e 0f
+0a: 01 09 0a
+0b: 01 03
+0c: 01
+0f: 01 03 05 06 07 08 0a 0b 0c
+14: (none)
+16: 01 03
+17: 01 04 06 07 0b 0c 12 15 17
+18: 01 02 04 05 06 09
+19: 01
+1a: 01 03 05 06
+1b: 19 1a
+20: 09
+25: 02 04 0e
+27: 01 0e
+2a: 06
+2b: 12
+2e: 01 03
+30: 01
+32: 01
+34: 01
+35: 03 04
+
+Expand capabilities (bit n = byte n//8, bit n%8):
+ff7f01e22ec37440e8b6bc7222698e4b07aaa90d6effcc9acf5391059b0d8d025bc2040000
+
+Observed behaviour (health sync, step 1):
+- FitnessData 0x07: totals (0x03) work; per-minute step data (0x0a/0x0b) carries steps, calories
+  (small calories, /1000 = kcal) and distance. Most minutes are empty records. Unknown field
+  bitmap-1 bit 0x10 seen in a few minutes (values 28..34).
+- Heart rate (bit 0x40) and resting heart rate (bitmap-2 bit 0x02) only appear after
+  EnableAutomaticHeartrate (0x07/0x17 = 1) was sent; the watch answered 0x186A0. In default mode it
+  measured roughly every few minutes, not every minute. Capability messages 0x17/0x17 and
+  0x07/0x23 are also sent at connect (Gadgetbridge does); 0x07/0x23 was answered 0x186A0.
+- "Sleep" messages (0x0c/0x0d) contain types 0x01 and 0x03 that coincide with walking, not sleep.
+  Real sleep on this watch comes via TruSleep (0x07/0x16 supported) = file download, step 2.
+
+Observed behaviour (health sync, step 2, 2026-11-04):
+- SettingRelated (0x01/0x31) tag 2 = 0x0e: TruSleep, RRI and GPS use the new 0x2C download.
+- Expand caps: bit 143 (dictionary sleep sync) and bit 199 (bed time) set, so sleep comes as
+  "sequence_data" with dictionary id 700013; the watch answered with file id 22 (= 0x16, same as the
+  type, so Gadgetbridge's "fileId == 0x16" check for the dictionary id in RequestBlock holds).
+  One night was 778 bytes: one session with score, efficiency, latency, bed/rising time, breathing
+  rate, HRV; heart-rate and SpO2 fields were absent. Stages start at bed time.
+- Watch faces (2026-11-05): 0x27/0x01 params = max_version 2.9, 466x466, file type 1, other versions
+  2.1..2.8; 0x27/0x02 listed 20 faces; 0x27/0x06 returns names only for downloaded faces (built-in ones
+  come back without a name). Upload (0x28, encrypted chunks), install confirm, activate and delete
+  (0x27/0x03) all work on this firmware. A third-party face made for the Huawei Watch 4
+  (GarminF9BW4.watch4.1.0.1.hwt: raw binary instead of a zip in com.huawei.watchface, screen HWHD09)
+  installed and became current but rendered garbled, both as version 1.0.0 and 2.1.0 - the file does
+  not suit the GT 5, the transfer was fine (watch checks the SHA-256).
+- Gadgetbridge #6005/#6199: from HarmonyOS 6.1 (and possibly late 6.0, after 6.0.0.328) Huawei signs
+  watch-face uploads with a server-side RSA "contentSign"; installs fail there for every face. A
+  firmware update of this watch may end sideloading.
+- Notifications deleted on the watch: the watch sends nothing to the phone (checked with a debug log).
+- Calendar (2026-11-05): expand bit 171 set, 184 not, so the app is in.huawei.calendar, fingerprint SystemApp. It
+  answers pings with 0xCA and asks for up to 500 events, 35 days ahead. Without a version it sends 64 zero bytes as
+  major. A full file of 60 events (24 KB) took about 1.5 s, unit size 935, encrypted chunks, protocol 1.0.0.
+- Small settings (2026-11-13, from the command list, not yet tried on the watch): event alarms 0x08/0x01 and
+  list 0x08/0x03 yes, smart alarm 0x08/0x02 no; move reminder 0x07/0x07 yes; automatic SpO2 0x07/0x24 and
+  low SpO2 alert 0x07/0x25 yes; do not disturb 0x01/0x0a no (so not offered). UserInfo 0x07/0x02 is not
+  in our list of commands to ask about, so its support is unknown; Gadgetbridge sends it to every watch.
+  Expand bits 0x57 (unknown gender) and 0xB3 (precision weight) are set.
+  2026-11-13 on the watch: the 0x08/0x03 alarm list answered and parsed (2 alarms, repeat 0x1f and 0x20).
+- Stress: 0x20/0x09 supported, "rrisqi_data.bin" (file id 16) was 0 bytes; probably automatic stress
+  measurement is off on the watch.

@@ -13,6 +13,7 @@ import stubs  # noqa: E402,F401  - dbus/GLib stand-ins when they are not install
 from watchbridge.config import Config  # noqa: E402
 from watchbridge.bluez import Bluez  # noqa: E402
 from watchbridge.service import ReconnectBackoff, Service  # noqa: E402
+from watchbridge.huawei import device as D  # noqa: E402
 from watchbridge.notifications import Notification, NotificationMonitor  # noqa: E402
 
 
@@ -173,6 +174,16 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(again.data["device"]["name"], "Mine")
         self.assertNotIn("bogus", json.load(open(path)))
 
+    def test_goals_have_defaults_and_change_one_at_a_time(self):
+        path = os.path.join(tempfile.mkdtemp(), "config.json")
+        with open(path, "w") as f:
+            json.dump({"health": {"interval_hours": 3}}, f)   # a config from before the goals
+        c = Config(path)
+        self.assertEqual(c.public()["health"]["goals"]["steps"], 8000)
+        c.update_public({"health": {"goals": {"sleep": 480}}})
+        goals = Config(path).data["health"]["goals"]
+        self.assertEqual((goals["sleep"], goals["steps"], goals["distance"]), (480, 8000, 5000))
+
     def test_remember_app(self):
         c = Config(os.path.join(tempfile.mkdtemp(), "config.json"))
         self.assertTrue(c.remember_app("Signal", "org.thoughtcrime.securesms", 1000))
@@ -189,7 +200,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(c.data["notifications"]["mode"], "selected")
 
 
-ADDR = "A8:6E:4E:B0:F0:F7"
+ADDR = "AA:BB:CC:00:11:22"   # made up; never a real watch's address
 
 
 class FakeDBusError(Exception):
@@ -211,7 +222,7 @@ class TestBluezConnect(unittest.TestCase):
         from watchbridge.bluez import HUAWEI_SPP_UUID
         b = Bluez.__new__(Bluez)  # no system bus needed
         b.adapter_path = "/org/bluez/hci1"
-        b.devices = {"/org/bluez/hci1/dev_A8_6E_4E_B0_F0_F7":
+        b.devices = {"/org/bluez/hci1/dev_AA_BB_CC_00_11_22":
                      {"Address": ADDR, "UUIDs": [HUAWEI_SPP_UUID], "Trusted": True}}
         b._profile_registered = True
         b._register_profile = lambda: None
@@ -239,6 +250,65 @@ class TestBluezConnect(unittest.TestCase):
         error(FakeDBusError("org.bluez.Error.Failed"))
         self.assertEqual(b.direct, [ADDR])
 
+    def test_stale_already_connected_does_not_hang(self):
+        # BlueZ kept the dropped connection: no socket will come, so don't wait for one
+        b, error = self.make()
+        error(FakeDBusError("org.bluez.Error.AlreadyConnected"))
+        self.assertEqual(b.direct, [ADDR])
+
+
+class FakeBluez:
+    def __init__(self):
+        self.calls = []
+
+    def disconnect_profile(self, address):
+        self.calls.append(("disconnect", address))
+
+    def connect(self, address, on_error):
+        self.calls.append(("connect", address))
+
+
+class TestReconnectLikeDisconnectConnect(unittest.TestCase):
+    """A lost watch came back only after Disconnect + Connect; every reconnect does both now."""
+
+    def make(self):
+        s = Service.__new__(Service)  # no D-Bus needed for these paths
+        s.config = Config(os.path.join(tempfile.mkdtemp(), "config.json"))
+        s.config.data["device"]["address"] = ADDR
+        s.config.data["device"]["auth_key"] = "x"
+        s._bluez = FakeBluez()
+        s.watch = None
+        s.state = "disconnected"
+        s._reconnect_source = None
+        s._backoff = ReconnectBackoff()
+        s._pairing = s._health_syncing = s._calendar_announce = s.watchfaces_loading = False
+        s.upload, s.calendar = {}, {}
+        s.states, s.reconnects = [], []
+        s._set_state = lambda state, detail: s.states.append(state)
+        s._schedule_reconnect = lambda: s.reconnects.append(True)
+        return s
+
+    def test_connect_releases_the_old_connection_first(self):
+        s = self.make()
+        s._connect()
+        self.assertEqual(s._bluez.calls, [("disconnect", ADDR), ("connect", ADDR)])
+
+    def test_dropped_link_is_cleaned_up_before_the_reconnect(self):
+        s = self.make()
+
+        class DeadWatch:
+            address = ADDR
+            stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        watch = s.watch = DeadWatch()
+        s._watch_state(watch, D.STATE_DISCONNECTED, "Socket closed")
+        self.assertTrue(watch.stopped)
+        self.assertEqual(s._bluez.calls, [("disconnect", ADDR)])
+        self.assertEqual((s.states, s.reconnects), (["disconnected"], [True]))
+
 
 class TestServiceRfcomm(unittest.TestCase):
     def test_extra_socket_does_not_replace_live_connection(self):
@@ -261,7 +331,112 @@ class TestServiceRfcomm(unittest.TestCase):
         self.assertEqual(extra.fileno(), -1)  # closed
 
 
+class TestWeatherFailure(unittest.TestCase):
+    """A failed download (no network yet after booting) must not block the weather for good."""
+
+    def test_failed_fetch_reports_and_the_next_one_runs(self):
+        import threading
+        from unittest import mock
+        from watchbridge import service as S
+
+        s = Service.__new__(Service)
+        s.config = Config(os.path.join(tempfile.mkdtemp(), "config.json"))
+        s.config.data["weather"].update({"latitude": 52.5, "longitude": 13.4, "location": "X"})
+        s.weather_report, s.weather_time, s.weather_error = None, 0, ""
+        s._weather_busy, s._weather_retry, s.watch = False, None, None
+        s._emit_status = lambda: None
+        retries = []
+
+        class Inline:     # run the download thread at once
+            def __init__(self, target, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        # Like the real main loop, idle callbacks run later, after the download thread has finished
+        idle = []
+
+        def run_idle():
+            while idle:
+                idle.pop(0)()
+
+        report = object()
+        with mock.patch.object(threading, "Thread", Inline), \
+                mock.patch.object(S.GLib, "idle_add", idle.append), \
+                mock.patch.object(S.GLib, "timeout_add_seconds", lambda d, fn: retries.append(fn) or 7), \
+                mock.patch.object(S.weather, "fetch", side_effect=[OSError("Network is unreachable"), report]):
+            s._refresh_weather(push=True)
+            run_idle()                              # raised NameError before 0.6.0-8
+            self.assertEqual(s.weather_error, "Network is unreachable")
+            self.assertFalse(s._weather_busy)
+            self.assertEqual(len(retries), 1)       # one retry is scheduled
+            s._refresh_weather(push=True)           # the next download is not blocked
+            run_idle()
+            self.assertEqual(len(retries), 1)       # and retries don't stack
+        self.assertIs(s.weather_report, report)
+        self.assertEqual(s.weather_error, "")
+
+
+class TestReconnectWatchdog(unittest.TestCase):
+    """A lost watch is tried at least every 10 minutes, whatever the last attempt got stuck in."""
+
+    def make(self, state):
+        s = TestReconnectLikeDisconnectConnect.make(self)
+        s.state, s._connect_started, s._user_disconnected = state, 1000.0, False
+        return s
+
+    def test_stuck_connecting_starts_over(self):
+        s = self.make("connecting")
+        s._reconnect_watchdog(now=1000 + 60)          # an attempt under way: left alone
+        self.assertEqual(s._bluez.calls, [])
+        s._reconnect_watchdog(now=1000 + 10 * 60)     # hung: a fresh attempt
+        self.assertEqual(s._bluez.calls, [("disconnect", ADDR), ("connect", ADDR)])
+
+    def test_hung_setup_starts_over_but_a_fresh_one_is_left_alone(self):
+        class SetupWatch:
+            address = ADDR
+            stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        s = self.make("initializing")
+        watch = s.watch = SetupWatch()
+        s._reconnect_watchdog(now=1000 + 30)
+        self.assertFalse(watch.stopped)
+        s._reconnect_watchdog(now=1000 + 10 * 60)
+        self.assertTrue(watch.stopped)
+        self.assertEqual(s._bluez.calls[-1], ("connect", ADDR))
+
+    def test_disconnected_without_a_timer_tries(self):
+        s = self.make("disconnected")
+        s._reconnect_watchdog(now=5000)
+        self.assertIn(("connect", ADDR), s._bluez.calls)
+
+    def test_pending_retry_is_not_doubled(self):
+        s = self.make("disconnected")
+        s._reconnect_source = 42
+        s._reconnect_watchdog(now=5000)
+        self.assertEqual(s._bluez.calls, [])
+
+    def test_left_alone(self):
+        for state in ("connected", "auth_failed"):
+            s = self.make(state)
+            s._reconnect_watchdog(now=99999)
+            self.assertEqual(s._bluez.calls, [], state)
+        s = self.make("disconnected")
+        s._user_disconnected = True                   # the user tapped Disconnect
+        s._reconnect_watchdog(now=99999)
+        self.assertEqual(s._bluez.calls, [])
+
+
 class TestReconnectBackoff(unittest.TestCase):
+    def test_retries_settle_at_ten_minutes(self):
+        b = ReconnectBackoff()
+        delays = [b.next_delay() for _ in range(10)]
+        self.assertEqual(delays[-4:], [600, 600, 600, 600])
+
     def test_short_connections_keep_growing_the_delay(self):
         b = ReconnectBackoff()
         delays = []

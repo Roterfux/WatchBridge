@@ -22,6 +22,7 @@ def _install_dbus():
     dbus.DBusException = Exception
     dbus.PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
     dbus.Boolean = bool
+    dbus.Byte = int
     dbus.String = str
     dbus.UInt32 = int
     dbus.Interface = lambda obj, iface: obj

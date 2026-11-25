@@ -35,8 +35,11 @@ Page {
         return out
     }
 
-    // Shared by "awake" in the sleep chart and the heart-rate line
-    readonly property string alertColor: "#ff6b5e"
+    // Shared by "awake" in the sleep chart and the heart-rate line.
+    // Canvas colours must be colour objects, never strings: Qt 5.6 (Sailfish) skips a string colour that
+    // equals one it remembers, and a colour object updates the wrong memory, so on every repaint the
+    // heart-rate line kept the grid's colour.
+    readonly property color alertColor: "#ff6b5e"
 
     function stageColor(stage) {
         return stage === "awake" ? alertColor
@@ -63,6 +66,24 @@ Page {
     readonly property bool isToday: day === dateKey(new Date())
     readonly property bool hasData: (h.minutes || 0) > 0 || (h.sleep && h.sleep.minutes > 0)
 
+    // Daily goals, in the order of the rings (outermost first)
+    readonly property var goals: (daemon.settings.health && daemon.settings.health.goals) || {}
+    function num(v) { return Number(v).toLocaleString(Qt.locale(), "f", 0) }
+    function km(m) { return qsTr("%1 km").arg((m / 1000).toFixed(1)) }
+    readonly property var goalItems: {
+        var g = rings.goalsFrom(goals)
+        var sleep = h.sleep ? h.sleep.minutes || 0 : 0
+        return [
+            { "value": h.steps || 0, "goal": g.steps, "text": qsTr("%1 steps").arg(num(h.steps || 0)),
+              "goalText": num(g.steps) },
+            { "value": h.distance || 0, "goal": g.distance, "text": km(h.distance || 0), "goalText": km(g.distance) },
+            { "value": h.calories || 0, "goal": g.calories, "text": qsTr("%1 kcal").arg(num(h.calories || 0)),
+              "goalText": qsTr("%1 kcal").arg(num(g.calories)) },
+            { "value": sleep, "goal": g.sleep, "text": qsTr("%1 sleep").arg(duration(sleep)),
+              "goalText": duration(g.sleep) }
+        ]
+    }
+
     function dateKey(d) { return Qt.formatDate(d, "yyyy-MM-dd") }
     function parseDay(key) {
         var p = key.split("-")
@@ -85,6 +106,7 @@ Page {
         return Qt.formatDate(parseDay(day), "ddd d MMM yyyy")
     }
     function duration(minutes) {
+        minutes = Math.round(minutes)
         var hh = Math.floor(minutes / 60), mm = minutes % 60
         return hh > 0 ? qsTr("%1 h %2 min").arg(hh).arg(mm) : qsTr("%1 min").arg(mm)
     }
@@ -108,6 +130,16 @@ Page {
 
         PullDownMenu {
             busy: !!hs.syncing
+            MenuItem {
+                text: qsTr("Month overview")
+                onClicked: pageStack.push(Qt.resolvedUrl("MonthPage.qml"),
+                                          { daemon: daemon, mode: "month", day: page.day, healthPage: page })
+            }
+            MenuItem {
+                text: qsTr("Week overview")
+                onClicked: pageStack.push(Qt.resolvedUrl("MonthPage.qml"),
+                                          { daemon: daemon, mode: "week", day: page.day, healthPage: page })
+            }
             MenuItem {
                 text: qsTr("Open data folder")
                 visible: !!hs.folder
@@ -164,24 +196,55 @@ Page {
                 text: h.error || ""
             }
 
-            // ---------------------------------------------------------- steps
-            Column {
-                width: parent.width
+            // ------------------------------------------------- goals and steps
+            Row {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                spacing: Theme.paddingLarge
                 visible: page.hasData
-                Label {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: Number(h.steps || 0).toLocaleString(Qt.locale(), "f", 0)
-                    font.pixelSize: Theme.fontSizeHuge
-                    color: Theme.highlightColor
+
+                ActivityRings {
+                    id: rings
+                    width: Math.min(Theme.itemSizeHuge * 1.4, parent.width * 0.42)
+                    height: width
+                    anchors.verticalCenter: parent.verticalCenter
+                    values: dayValues(page.h, page.goals)
+                    colors: daemon.ringColors
                 }
-                Label {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: qsTr("steps · %1 km · %2 kcal").arg(((h.distance || 0) / 1000).toFixed(1)).arg(h.calories || 0)
-                    color: Theme.secondaryHighlightColor
+                Column {
+                    width: parent.width - rings.width - parent.spacing
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Theme.paddingSmall
+                    Repeater {
+                        model: page.goalItems
+                        Row {
+                            spacing: Theme.paddingMedium
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.paddingMedium
+                                height: width
+                                radius: width / 2
+                                color: daemon.ringColors[index]
+                            }
+                            Column {
+                                Label {
+                                    text: modelData.text
+                                    color: Theme.highlightColor
+                                    font.pixelSize: index === 0 ? Theme.fontSizeLarge : Theme.fontSizeMedium
+                                }
+                                Label {
+                                    text: modelData.value >= modelData.goal ? qsTr("Goal %1 reached").arg(modelData.goalText)
+                                                                            : qsTr("of %1").arg(modelData.goalText)
+                                    color: Theme.secondaryHighlightColor
+                                    font.pixelSize: Theme.fontSizeExtraSmall
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
-            Canvas {
+            ChartCanvas {
                 id: stepChart
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * x
@@ -214,7 +277,7 @@ Page {
 
             // ----------------------------------------------------- heart rate
             SectionHeader { text: qsTr("Heart rate"); visible: page.hasData }
-            Canvas {
+            ChartCanvas {
                 id: hrChart
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * x
@@ -228,7 +291,7 @@ Page {
                     page.drawGrid(ctx, width, height, page.dayTicks)
                     if (points.length === 0) return
                     var lo = h.heartRateMin - 5, hi = h.heartRateMax + 5
-                    ctx.strokeStyle = page.alertColor
+                    ctx.strokeStyle = Theme.rgba(page.alertColor, 1)
                     // A thin anti-aliased line looks darker than the same colour as a block
                     ctx.lineWidth = Math.max(3, Theme.paddingSmall / 2)
                     ctx.lineJoin = "round"
@@ -288,7 +351,7 @@ Page {
                 color: h.sleep && h.sleep.minutes > 0 ? Theme.highlightColor : Theme.secondaryColor
             }
             // Hypnogram: awake on top, then REM, light and deep at the bottom
-            Canvas {
+            ChartCanvas {
                 id: sleepChart
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * x
@@ -309,7 +372,7 @@ Page {
                     for (var i = 0; i < periods.length; i++) {
                         var stage = periods[i][2]
                         var row = rows[stage] !== undefined ? rows[stage] : 2
-                        ctx.fillStyle = page.stageColor(stage)
+                        ctx.fillStyle = page.stageColor(stage)    // colour objects only
                         var x = width * (periods[i][0] - first) / span
                         var w = Math.max(1, width * (periods[i][1] - periods[i][0]) / span)
                         ctx.fillRect(x, row * rowH + 1, w, rowH - 2)
@@ -380,7 +443,7 @@ Page {
 
             // --------------------------------------------------------- stress
             SectionHeader { text: qsTr("Stress"); visible: page.hasData && !!h.stress && h.stress.count > 0 }
-            Canvas {
+            ChartCanvas {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * x
                 height: Theme.itemSizeMedium
@@ -393,7 +456,7 @@ Page {
                     for (var i = 0; i < points.length; i++) {
                         var v = points[i][1]
                         // Huawei's bands: relaxed < 30, normal < 60, medium < 80, high
-                        ctx.fillStyle = v < 30 ? "#4fb3ff" : v < 60 ? "#7fd36b" : v < 80 ? "#ffb347" : "#ff6b5e"
+                        ctx.fillStyle = Theme.rgba(v < 30 ? "#4fb3ff" : v < 60 ? "#7fd36b" : v < 80 ? "#ffb347" : "#ff6b5e", 1)
                         var x = width * points[i][0] / 86400
                         var bh = height * v / 100
                         ctx.fillRect(x - 1, height - bh, 3, bh)

@@ -9,6 +9,7 @@ Item {
     property int battery: -1
     property string watchState: "unknown"
     property bool busy: false
+    property bool showBatteryText: true
     property date now: new Date()
 
     readonly property color accent: watchState === "connected" ? Theme.highlightColor
@@ -48,7 +49,7 @@ Item {
         }
     }
 
-    Canvas {
+    ChartCanvas {
         id: canvas
         anchors.fill: parent
         anchors.margins: Theme.paddingMedium
@@ -63,10 +64,11 @@ Item {
             // Bezel
             ctx.beginPath()
             ctx.arc(cx, cy, r - 1, 0, 2 * Math.PI)
-            ctx.fillStyle = "#1c1f24"
+            // Colours as objects, not strings: Qt 5.6 can skip a string colour (see HealthPage alertColor)
+            ctx.fillStyle = Theme.rgba("#1c1f24", 1)
             ctx.fill()
             ctx.lineWidth = r * 0.04
-            ctx.strokeStyle = "#3a3f47"
+            ctx.strokeStyle = Theme.rgba("#3a3f47", 1)
             ctx.stroke()
 
             // Battery track + arc
@@ -111,8 +113,8 @@ Item {
                 ctx.strokeStyle = color
                 ctx.stroke()
             }
-            hand(hAng, r * 0.38, r * 0.05, "#ffffff")
-            hand(mAng, r * 0.56, r * 0.035, "#ffffff")
+            hand(hAng, r * 0.38, r * 0.05, Qt.rgba(1, 1, 1, 1))
+            hand(mAng, r * 0.56, r * 0.035, Qt.rgba(1, 1, 1, 1))
             hand(sAng, r * 0.6, r * 0.012, root.accent)
             ctx.beginPath()
             ctx.arc(cx, cy, r * 0.035, 0, 2 * Math.PI)
@@ -122,6 +124,7 @@ Item {
     }
 
     Label {
+        visible: root.showBatteryText
         anchors { horizontalCenter: parent.horizontalCenter; top: parent.verticalCenter; topMargin: parent.height * 0.14 }
         text: root.battery >= 0 ? root.battery + " %" : ""
         font.pixelSize: Theme.fontSizeExtraSmall

@@ -86,16 +86,28 @@ class Packet:
         self.encrypt = encrypt
         self.sliced = sliced
         self.payload = None  # raw payload for non-TLV packets
+        self.raw = None      # outgoing non-TLV body (file upload chunks), sent instead of the TLV
         self.was_encrypted = False
 
+    @classmethod
+    def raw_packet(cls, service, command, body, encrypt=True):
+        """A packet whose body is raw bytes; encrypted, it becomes an encrypted TLV
+        (HuaweiPacket.encryptIfRequired)."""
+        p = cls(service, command, encrypt=encrypt)
+        p.raw = bytes(body)
+        return p
+
     def __repr__(self):
+        if self.raw is not None:
+            return "Packet(%02x/%02x, %d raw bytes)" % (self.service, self.command, len(self.raw))
         return "Packet(%02x/%02x, %r)" % (self.service, self.command, self.tlv)
 
     def serialize(self, params, iv=None):
+        plain = self.raw if self.raw is not None else self.tlv.serialize()
         if self.encrypt and params.transactions_crypted:
-            body = encrypt_raw(params, self.tlv.serialize(), iv).serialize()
+            body = encrypt_raw(params, plain, iv).serialize()
         else:
-            body = self.tlv.serialize()
+            body = plain
         if self.sliced:
             return self._serialize_sliced(params, body)
         return self._serialize_unsliced(body)

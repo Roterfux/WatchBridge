@@ -7,7 +7,7 @@ Page {
 
     property var daemon
     // The RPM build replaces this with the exact package version, e.g. "0.1.0-7"
-    readonly property string appVersion: "0.4.0-dev"
+    readonly property string appVersion: "0.6.0-dev"
     readonly property bool serviceRunning: !!daemon && daemon.available
     // Services before 0.1.0-7 did not report a version
     readonly property string serviceVersion: !serviceRunning ? ""
@@ -78,6 +78,18 @@ Page {
                 text: qsTr("Licensed under the GNU Affero General Public License v3 or later. " +
                            "WatchBridge is an independent project, not affiliated with Gadgetbridge, Huawei or Jolla. " +
                            "Huawei and Watch GT are trademarks of Huawei Technologies.")
+            }
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                wrapMode: Text.Wrap
+                textFormat: Text.StyledText
+                linkColor: Theme.highlightColor
+                onLinkActivated: Qt.openUrlExternally(link)
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.secondaryColor
+                text: qsTr("Source code, issues and releases: %1")
+                      .arg("<a href=\"https://github.com/Roterfux/WatchBridge\">github.com/Roterfux/WatchBridge</a>")
             }
         }
     }

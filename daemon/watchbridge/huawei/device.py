@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Connection/initialisation logic ported from Gadgetbridge
-# (HuaweiSupportProvider.java, AsynchronousResponse.java, HuaweiWeatherManager.java
-# and the request classes), Copyright (C) 2024 Damien Gaignon, Martin.JM,
-# Vitalii Tomin. Translated to Python and modified for WatchBridge, 2026.
+# (HuaweiSupportProvider.java, AsynchronousResponse.java, HuaweiWeatherManager.java,
+# p2p/HuaweiP2PCalendarService.java and the request classes), Copyright (C) 2024
+# Damien Gaignon, Martin.JM, Me7c7, Vitalii Tomin. Translated to Python and modified for WatchBridge, 2026.
 # See NOTICE.md.
 """Talks to a Huawei watch over an established byte stream (RFCOMM socket)."""
 
@@ -17,10 +17,14 @@ import threading
 import time
 import zlib
 
+from . import alarms as A
 from . import commands as C
 from . import filedownload as FDL
 from . import fitness as F
 from . import healthfiles as HF
+from . import p2p as P2P
+from . import p2pcalendar as CAL
+from . import watchface as WFC
 from .filedownload import FD, SERVICE as FD_SERVICE
 from .commands import DC, NC, Service, WC
 from .crypto import HuaweiCrypto, generate_nonce, hexstr
@@ -33,8 +37,12 @@ INIT_TIMEOUT = 5.0
 FILE_TIMEOUT = 15.0  # answers to file download requests
 
 # Expand capabilities (HuaweiState.java)
+CAP_UNKNOWN_GENDER = 0x57
+CAP_PRECISION_WEIGHT = 0xB3
 CAP_DICT_SLEEP_SYNC = 143   # sleep as a sequence-data file with stages and score
 CAP_BED_TIME = 199          # stages start at bed time instead of fall-asleep time
+CAP_CALENDAR = 171          # calendar app reached over P2P
+CAP_EXTERNAL_CALENDAR = 184  # Huawei's own calendar service instead, which Gadgetbridge cannot sync
 # Gadgetbridge never times out the handshake requests before HiChain: the watch
 # may hold its answer until the user confirms the pairing on its screen.
 FIRST_AUTH_TIMEOUT = 90.0
@@ -62,6 +70,11 @@ class WatchError(Exception):
     pass
 
 
+WATCHFACE_TIMEOUT = 5
+UPLOAD_STEP_TIMEOUT = 30  # the watch is silent while it checks or stores the file
+CONFIRM_TIMEOUT = 20      # after the last chunk, for the watch's install confirmation
+
+
 def _notification_id(key):
     """The notification id sent with a notification and with its removal (Huawei tag 0x1A)."""
     return zlib.crc32(key.encode("utf-8")) & 0x7FFFFFFF if key else 0
@@ -73,7 +86,8 @@ class Listener:
     def on_state(self, state, detail=""):
         pass
 
-    def on_battery(self, level):
+    def on_battery(self, level, charging=None):
+        """Battery level 0..100; charging is True/False when the watch said so, else None."""
         pass
 
     def on_device_info(self, info):
@@ -91,6 +105,28 @@ class Listener:
 
     def on_call_action(self, action):
         """A button on the watch's call screen: C.CALL_ACTION_REJECT, C.CALL_ACTION_ACCEPT or an int."""
+        pass
+
+    def on_watchfaces(self, faces, error=""):
+        """The faces installed on the watch (list of dicts), or None and an error."""
+        pass
+
+    def on_upload(self, state, progress, error="", activated=False, file_name=""):
+        """Watch-face upload: state is "uploading", "done" or "failed"; progress 0..100;
+        file_name ("id_version") is the name the watch keeps the face under."""
+        pass
+
+    def on_calendar_request(self, request):
+        """The watch's calendar wants events: answer with send_calendar() or refuse_calendar()."""
+        pass
+
+    def on_calendar_done(self, events, error=""):
+        """A calendar sync ended: `events` is how many the watch now holds, None after an error."""
+        pass
+
+    def on_alarms(self, alarms, error=""):
+        """The watch's alarms (list of dicts, see alarms.parse_event_alarm_list), or None if they
+        could not be read. error is set when a change was not accepted."""
         pass
 
 
@@ -161,6 +197,14 @@ class HuaweiWatch:
         self._jobs = queue.Queue()
         self._file_blocks = queue.Queue()   # 0x2C/0x05 data packets of a file download
         self.rri_new_sync = False           # stress file via service 0x2C (SettingRelated)
+        self.watchface_params = None        # {"width", "height", "max_version", ...} from 0x27/0x01
+        self._upload = None                 # the running watchface.Upload
+        self._upload_packets = queue.Queue()  # 0x28/* and 0x27/0x05 packets for the upload thread
+        self._upload_lock = threading.Lock()
+        self._p2p_sequence = 1
+        self._p2p_lock = threading.Lock()
+        self._p2p_waiting = {}              # sequence -> callback(code) for our pings
+        self._calendar = None               # CAL.CalendarSync, what the watch holds on this connection
         self._running = False
         self._in_setup = False
         self._threads = []
@@ -181,6 +225,7 @@ class HuaweiWatch:
         self._running = False
         self._jobs.put(None)
         self._file_blocks.put(None)  # wake a download waiting for data
+        self._upload_packets.put(None)
         # close() alone neither wakes the reader blocked in recv() nor releases
         # the RFCOMM channel (the next connect then fails with EBUSY)
         try:
@@ -212,6 +257,233 @@ class HuaweiWatch:
 
     def send_weather(self, report):
         self.submit(lambda: self._send_weather(report))
+
+    # ------------------------------------------------------------ watch faces
+    @property
+    def uploading(self):
+        return self._upload is not None
+
+    def list_watchfaces(self):
+        """Reads the installed faces; the answer arrives via Listener.on_watchfaces."""
+        self.submit(self._list_watchfaces)
+
+    def watchface_operation(self, file_name, version, operation):
+        """Activate or delete a face (WFC.OPERATION_*), then re-read the list."""
+        def job():
+            reply = self.request(WFC.operation_request(file_name, version, operation), WATCHFACE_TIMEOUT)
+            result = reply.tlv.get_as_int(0x7F, C.RESULT_SUCCESS) if reply is not None else None
+            log.info("Watch face %s %s: %s", "activate" if operation == WFC.OPERATION_ACTIVATE else "delete",
+                     file_name, "ok" if result == C.RESULT_SUCCESS else result)
+            self._list_watchfaces()
+        self.submit(job)
+
+    def upload_watchface(self, binary, version=None):
+        """Sends a face (WatchfacePackage.binary) to the watch in a thread of its own, so
+        notifications and calls are not held up. Progress via Listener.on_upload.
+        `version` overrides the format version the face is registered under."""
+        if not self.is_ready():
+            raise WatchError("The watch is not connected")
+        version = version or WFC.upload_version(self.watchface_params)
+        up = WFC.Upload(binary, file_name=WFC.random_file_name(version),
+                        links_encrypted=self.params.transactions_crypted)
+        self._claim_upload(up)
+        threading.Thread(target=self._run_upload, args=(up,), daemon=True, name="upload").start()
+
+    def _claim_upload(self, up):
+        with self._upload_lock:
+            if self._upload is not None:
+                raise WatchError("An upload is already running")
+            while not self._upload_packets.empty():
+                self._upload_packets.get_nowait()
+            self._upload = up
+
+    def _list_watchfaces(self):
+        if not self.is_ready():
+            return
+        reply = self.request(WFC.list_request(), WATCHFACE_TIMEOUT)
+        if reply is None:
+            self.listener.on_watchfaces(None, "The watch did not send its list of watch faces")
+            return
+        faces = WFC.parse_list(reply.tlv)
+        names = {}
+        if faces:
+            reply = self.request(WFC.names_request([f["file"] for f in faces]), WATCHFACE_TIMEOUT)
+            if reply is not None:
+                names = WFC.parse_names(reply.tlv)
+        for f in faces:
+            f["name"] = names.get(f["file"]) or f["file"]
+        log.info("Watch faces: %d installed", len(faces))
+        self.listener.on_watchfaces(faces, "")
+
+    def _transfer(self, up, report=None):
+        """Runs an upload to its end, answering the watch's packets. Raises when it fails."""
+        last_report = 0.0
+        for p in up.start():
+            self._send(p)
+        while not up.done:
+            try:
+                pkt = self._upload_packets.get(timeout=CONFIRM_TIMEOUT if up.uploaded else UPLOAD_STEP_TIMEOUT)
+            except queue.Empty:
+                if up.uploaded:
+                    log.info("Upload complete; the watch sent no confirmation")
+                    break
+                raise WFC.UploadError("The watch stopped answering at %d %%" % up.progress)
+            if pkt is None:
+                raise WatchError("The connection closed during the upload")
+            for out in up.handle(pkt):
+                self._send(out)
+            now = time.monotonic()
+            if report is not None and now - last_report >= 0.5 and not up.uploaded:
+                last_report = now
+                report(up.progress)
+
+    def _run_upload(self, up):
+        self.listener.on_upload("uploading", 0)
+        log.info("Upload of %d bytes as %s", len(up.data), up.file_name)
+        try:
+            self._transfer(up, lambda progress: self.listener.on_upload("uploading", progress))
+            log.info("Upload finished%s", ", face activated" if up.activated else "")
+            self.listener.on_upload("done", 100, "", up.activated, up.file_name)
+        except WFC.UploadError as e:
+            log.warning("Upload failed: %s", e)
+            self.listener.on_upload("failed", up.progress, str(e))
+        except (WatchError, OSError) as e:
+            log.warning("Upload failed: %s", e)
+            self.listener.on_upload("failed", up.progress, str(e))
+        finally:
+            self._upload = None
+        if up.done or up.uploaded:
+            self.list_watchfaces()
+
+    # --------------------------------------------------------------- calendar
+    @property
+    def calendar_supported(self):
+        return self.supports(P2P.SERVICE, P2P.COMMAND) and self.supports_expand(CAP_CALENDAR) \
+            and not self.supports_expand(CAP_EXTERNAL_CALENDAR)
+
+    def calendar_sync(self, first=False):
+        """Asks the watch's calendar for a sync; it answers via Listener.on_calendar_request.
+        `first`: right after connecting, also ask it for its own events, as Gadgetbridge does."""
+        def job():
+            if first:
+                self._calendar_command(CAL.CMD_DOWNLOAD, CAL.START_SYNC)
+            self._calendar_command(CAL.CMD_UPLOAD, CAL.START_SYNC)
+        self.submit(job)
+
+    def send_calendar(self, request, events):
+        """Answers on_calendar_request with the phone's events."""
+        self.submit(lambda: self._send_calendar(request, events))
+
+    def refuse_calendar(self, answer):
+        """Answers on_calendar_request without events (CAL.ANSWER_DISABLED, CAL.ANSWER_NO_PERMISSION)."""
+        self.submit(lambda: self._calendar_command(CAL.CMD_UPLOAD, answer))
+
+    def _next_p2p_sequence(self):
+        with self._p2p_lock:
+            self._p2p_sequence = P2P.next_sequence(self._p2p_sequence)
+            return self._p2p_sequence
+
+    def _calendar_command(self, cmd, value):
+        """Every command waits for the app's answer to a ping (sendCalendarCmd)."""
+        def answered(code):
+            if code & 0xFF != P2P.CODE_PRESENT:
+                log.warning("The watch's calendar answered the ping with 0x%02x", code)
+                self.listener.on_calendar_done(None, "The calendar on the watch did not answer")
+                return
+            self.submit(lambda: self._send_safely(P2P.data(self._next_p2p_sequence(), CAL.MODULE, CAL.PACKAGE,
+                                                           CAL.FINGERPRINT, CAL.command(cmd, value))))
+
+        sequence = self._next_p2p_sequence()
+        self._p2p_waiting[sequence] = answered
+        self._send_safely(P2P.ping(sequence, CAL.PACKAGE))
+
+    def _handle_p2p(self, tlv):
+        message = P2P.parse(tlv)
+        if message["source"] == P2P.BATTERY_PACKAGE and message["sequence"] not in self._p2p_waiting:
+            self._battery_message(message)
+            return
+        if message["source"] != CAL.PACKAGE:
+            log.debug("P2P message from %s ignored", message["source"])
+            return
+        waiting = self._p2p_waiting.pop(message["sequence"], None)
+        if waiting is not None:
+            waiting(message["code"])
+        elif message["command"] in (P2P.CMD_PING, P2P.CMD_DATA):
+            answer = P2P.ack(message["sequence"], message["destination"], message["source"])
+            self.submit(lambda: self._send_safely(answer))
+            if message["command"] == P2P.CMD_DATA:
+                self._calendar_message(message["data"])
+
+    def _battery_message(self, message):
+        if message["command"] not in (P2P.CMD_PING, P2P.CMD_DATA):
+            return
+        answer = P2P.ack(message["sequence"], message["destination"], message["source"])
+        self.submit(lambda: self._send_safely(answer))
+        if message["command"] != P2P.CMD_DATA:
+            return
+        event = P2P.parse_battery_event(message["data"])
+        if event is None:
+            log.debug("Battery message ignored: %r", message["data"][:80])
+            return
+        level, charging = event
+        log.info("Battery event from the watch: %s %%, charging %s", level, charging)
+        self._update_battery(self.battery if level is None else level, charging)
+
+    def _calendar_message(self, body):
+        request = CAL.parse_request(body)
+        if request is None:
+            # Command 3: a reminder was snoozed or closed on the watch; nothing to do with it
+            log.info("Calendar message %s from the watch", body[:1].hex())
+            return
+        # Not the major part: once set, it is the phone's private id
+        log.info("Calendar request: mode %d, version %s, up to %d events, %d days ahead", request["mode"],
+                 request["minor"] if request["major"] else "none", request["count"], request["days"])
+        self.listener.on_calendar_request(request)
+
+    def _send_calendar(self, request, events):
+        if request["mode"] == 3:
+            self._calendar_command(CAL.CMD_UPLOAD, CAL.ANSWER_MODE_3)
+        if self._calendar is None:
+            self._calendar = CAL.CalendarSync(self.store.android_id().decode("utf-8"))
+        cal = self._calendar
+        if self._upload is not None:
+            self.listener.on_calendar_done(None, "The watch is busy with an upload")
+            return
+        content = cal.build(request, events)
+        if content is None:
+            log.info("Calendar: the watch is up to date (%d events)", cal.count)
+            self._calendar_command(CAL.CMD_UPLOAD, CAL.ANSWER_NO_CHANGES)
+            self.listener.on_calendar_done(cal.count)
+            return
+        up = WFC.Upload(content, file_name="calendar_data_%d.json" % (time.time() * 1000), file_type=CAL.FILE_TYPE,
+                        links_encrypted=self.params.transactions_crypted,
+                        packages=(CAL.MODULE, CAL.PACKAGE, P2P.LOCAL_FINGERPRINT, CAL.FINGERPRINT))
+        try:
+            self._claim_upload(up)
+        except WatchError as e:
+            cal.forget()
+            self.listener.on_calendar_done(None, str(e))
+            return
+        threading.Thread(target=self._run_calendar_upload, args=(cal, up), daemon=True, name="calendar").start()
+
+    def _run_calendar_upload(self, cal, up):
+        log.info("Calendar: sending %d bytes", len(up.data))
+        error = ""
+        try:
+            self._transfer(up)
+        except (WFC.UploadError, WatchError, OSError) as e:
+            log.warning("Calendar upload failed: %s", e)
+            error = str(e)
+        finally:
+            self._upload = None
+        if error:
+            cal.forget()  # the watch may hold anything now; the next sync starts over
+            self.listener.on_calendar_done(None, error)
+        elif cal.wants_full_sync:
+            self.calendar_sync()
+        else:
+            log.info("Calendar: the watch holds %d events", cal.count)
+            self.listener.on_calendar_done(cal.count)
 
     def send_incoming_call(self, name, number):
         """Shows the call screen on the watch. Sent at once from the calling thread, not
@@ -247,17 +519,132 @@ class HuaweiWatch:
     def stop_find_phone(self):
         self.submit(lambda: self._send(C.find_phone_stop()))
 
-    def set_automatic_heart_rate(self, enabled):
-        self.submit(lambda: self._set_automatic_heart_rate(enabled))
+    def set_automatic_heart_rate(self, enabled, mode=None):
+        self.submit(lambda: self._set_automatic_heart_rate(enabled, mode))
 
-    def _set_automatic_heart_rate(self, enabled):
+    def _set_automatic_heart_rate(self, enabled, mode=None):
+        """Continuous heart rate on or off. mode "realtime" measures about every second (0x07/0x1c),
+        "smart" less often at rest, roughly every 10 minutes (0x07/0x17); None sends only 0x07/0x17,
+        as before modes existed."""
+        realtime_ok = self.supports(F.SERVICE, F.REALTIME_HEART_RATE)
+        if mode == "realtime" and realtime_ok:
+            # Gadgetbridge sends this one instead of 0x07/0x17 when its real-time mode is chosen
+            self._confirm("Continuous heart rate %s (real-time)" % ("on" if enabled else "off"),
+                          F.realtime_heart_rate(enabled))
+            return
         if not self.supports(F.SERVICE, 0x17):
             log.info("The watch does not support switching continuous heart rate")
             return
-        reply = self.request(F.automatic_heart_rate(enabled), 2.0)
-        log.info("Continuous heart rate %s: %s", "on" if enabled else "off",
-                 "ok" if reply is not None and reply.tlv.get_as_int(0x7F, C.RESULT_SUCCESS) == C.RESULT_SUCCESS
-                 else "no confirmation (%r)" % (reply.tlv if reply is not None else None))
+        if realtime_ok and (mode == "smart" or not enabled):
+            # Leave real-time mode first, in case it was chosen on the watch or earlier
+            self._confirm("Real-time heart rate off", F.realtime_heart_rate(False))
+        self._confirm("Continuous heart rate %s%s" % ("on" if enabled else "off", " (smart)" if mode == "smart" else ""),
+                      F.automatic_heart_rate(enabled))
+
+    # ---------------------------------------------------- alarms and settings
+    @property
+    def alarms_supported(self):
+        # Gadgetbridge's supportsChangingAlarm
+        return self.supports(A.SERVICE, A.EVENT_ALARM_LIST)
+
+    def read_alarms(self):
+        self.submit(self._read_alarms)
+
+    def set_alarms(self, alarms):
+        """Replace the watch's alarms with `alarms` (at most five), then read them back."""
+        alarms = [dict(a) for a in alarms][:A.MAX_ALARMS]
+        self.submit(lambda: self._set_alarms(alarms))
+
+    def _read_alarms(self, error=""):
+        if not self.alarms_supported:
+            self.listener.on_alarms(None, error)
+            return
+        reply = self.request(A.event_alarm_list_request(), 3.0)
+        if reply is None:
+            self.listener.on_alarms(None, error or "The watch did not send its alarms")
+            return
+        try:
+            alarms = A.parse_event_alarm_list(reply.tlv)
+        except (KeyError, ValueError, struct.error) as e:
+            log.warning("Could not read the alarm list: %s (%r)", e, reply.tlv)
+            self.listener.on_alarms(None, error or "Could not read the watch's alarms")
+            return
+        log.info("Alarms on the watch: %d (%d on)", len(alarms), sum(1 for a in alarms if a["enabled"]))
+        self.listener.on_alarms(alarms, error)
+
+    def _set_alarms(self, alarms):
+        reply = self.request(A.set_event_alarms(alarms), 3.0)
+        result = reply.tlv.get_as_int(0x7F, C.RESULT_SUCCESS) if reply is not None else None
+        error = ""
+        if result != C.RESULT_SUCCESS:
+            log.warning("Alarms not accepted: %r", reply.tlv if reply is not None else None)
+            error = "The watch did not accept the alarms"
+        else:
+            log.info("Sent %d alarm(s)", len(alarms))
+        self._read_alarms(error)
+
+    def apply_settings(self, keys):
+        """Send changed watch settings now: "profile", "move_reminder", "spo2"."""
+        keys = set(keys)
+        self.submit(lambda: self._apply_settings(keys))
+
+    def _apply_settings(self, keys):
+        if "profile" in keys:
+            self._send_user_info()
+        if "move_reminder" in keys:
+            self._send_move_reminder()
+        if "spo2" in keys:
+            self._send_spo2()
+
+    def _confirm(self, what, packet):
+        reply = self.request(packet, 2.0)
+        ok = reply is not None and reply.tlv.get_as_int(0x7F, C.RESULT_SUCCESS) == C.RESULT_SUCCESS
+        log.info("%s: %s", what, "ok" if ok else "no confirmation (%r)" % (reply.tlv if reply is not None else None))
+        return ok
+
+    def _send_user_info(self):
+        profile = self.settings.get("profile") or {}
+        try:
+            height, weight = int(profile.get("height") or 0), float(profile.get("weight") or 0)
+            year, month, day = (int(x) for x in str(profile.get("birthday") or "").split("-"))
+        except ValueError:
+            return      # not filled in: leave the watch's own profile alone
+        if height <= 0 or weight <= 0 or year < 1900:
+            return
+        today = time.localtime()
+        age = today.tm_year - year - ((today.tm_mon, today.tm_mday) < (month, day))
+        gender = {"male": F.GENDER_MALE, "female": F.GENDER_FEMALE}.get(profile.get("gender"), F.GENDER_UNKNOWN)
+        # Gadgetbridge sends this to every watch; the GT 5 does not list 0x07/0x02, so the answer is logged
+        self._confirm("Profile", F.user_info(height, weight, age, (year, month, day), gender,
+                                             self.supports_expand(CAP_UNKNOWN_GENDER),
+                                             self.supports_expand(CAP_PRECISION_WEIGHT)))
+
+    def _send_move_reminder(self):
+        mr = self.settings.get("move_reminder") or {}
+        if mr.get("enabled") is None or not self.supports(F.SERVICE, F.ACTIVITY_REMINDER):
+            return      # never set in WatchBridge: leave the watch's setting alone
+
+        def hm(text, default):
+            try:
+                h, m = str(text).split(":")
+                return int(h), int(m)
+            except ValueError:
+                return default
+
+        self._confirm("Move reminder", F.activity_reminder(bool(mr["enabled"]), int(mr.get("interval") or 60),
+                                                           hm(mr.get("start"), (8, 0)), hm(mr.get("end"), (22, 0)),
+                                                           int(mr.get("days", 0x1F))))
+
+    def _send_spo2(self):
+        auto = self.settings.get("automatic_spo2")
+        if auto is None or not self.supports(F.SERVICE, F.AUTOMATIC_SPO2):
+            return
+        # The watch answers neither of these
+        self._send(F.automatic_spo2(bool(auto)))
+        log.info("Automatic SpO2 %s", "on" if auto else "off")
+        if self.supports(F.SERVICE, F.LOW_SPO2_ALERT):
+            time.sleep(0.05)
+            self._send(F.low_spo2_alert(int(self.settings.get("low_spo2_alert") or 0) if auto else 0))
 
     def sync_health(self, step_start, sleep_start, sleep_file_start=None, stress_start=None):
         """Fetch totals, per-minute activity since step_start, basic sleep since sleep_start,
@@ -301,6 +688,7 @@ class HuaweiWatch:
             self._running = False
             self._jobs.put(None)
             self._file_blocks.put(None)
+            self._upload_packets.put(None)
             self._fail_waiter()
             if not self._in_setup:
                 # During setup the connect sequence reports the failing step itself
@@ -321,6 +709,13 @@ class HuaweiWatch:
         if key == (FD_SERVICE, FD.BLOCK):
             # File data arrives in bursts, not as an answer to a single request
             self._file_blocks.put(packet)
+            return
+        if packet.service == WFC.UPLOAD_SERVICE or key == (WFC.WATCHFACE_SERVICE, WFC.WF.CONFIRM):
+            # The watch drives the upload; these are not answers to a single request
+            if self._upload is not None:
+                self._upload_packets.put(packet)
+            else:
+                log.info("Upload packet %02x/%02x without an upload: %r", packet.service, packet.command, packet.tlv)
             return
         with self._waiter_lock:
             waiter = self._waiter
@@ -581,7 +976,7 @@ class HuaweiWatch:
             self.request(F.notify_rest_heart_rate_capability(), 2.0)
         # None = leave the watch's own setting alone
         if self.settings.get("continuous_heart_rate") is not None:
-            self._set_automatic_heart_rate(self.settings["continuous_heart_rate"])
+            self._set_automatic_heart_rate(self.settings["continuous_heart_rate"], self.settings.get("heart_rate_mode"))
         if self.supports(0x02, NC.ACTION) and self.protocol_version == 2:
             reply = self.request(C.notification_constraints())
             if reply is not None:
@@ -597,6 +992,15 @@ class HuaweiWatch:
             self.request(C.language(self.settings.get("locale", "en-US"), self.settings.get("imperial", False)))
         if self.supports(0x01, DC.DATE_FORMAT):
             self.request(C.date_format(self.settings.get("date_format", 3), 2 if self.settings.get("24h", True) else 1))
+        # Settings made in WatchBridge; each is left to the watch until it has been set here
+        self._apply_settings({"profile", "move_reminder", "spo2"})
+        if self.alarms_supported:
+            self._read_alarms()
+        if self.supports(WFC.WATCHFACE_SERVICE, WFC.WF.PARAMS):
+            reply = self.request(WFC.params_request(), 2.0)
+            if reply is not None:
+                self.watchface_params = WFC.parse_params(reply.tlv)
+                log.info("Watch face params: %s", self.watchface_params)
 
     def _sync_time(self):
         reply = self.request(C.set_time())
@@ -605,15 +1009,20 @@ class HuaweiWatch:
             if diff > 0:
                 self.request(C.set_time())
 
+    def read_battery(self):
+        """Ask for the battery level. The GT 5 announces no level changes by itself (only charging
+        starting or stopping, over P2P), so the service polls this while connected."""
+        self.submit(self._read_battery)
+
     def _read_battery(self):
         reply = self.request(C.battery_level())
         if reply is not None:
             self._update_battery(C.parse_battery(reply.tlv))
 
-    def _update_battery(self, level):
+    def _update_battery(self, level, charging=None):
         if level is not None and level >= 0:
             self.battery = level
-            self.listener.on_battery(level)
+            self.listener.on_battery(level, charging)
 
     # ------------------------------------------------------------ async packets
     def _handle_async(self, packet):
@@ -634,6 +1043,8 @@ class HuaweiWatch:
             action = C.parse_call_action(packet.tlv)
             log.info("Call screen on the watch: %s", action)
             self.listener.on_call_action(action)
+        elif key == (P2P.SERVICE, P2P.COMMAND):
+            self._handle_p2p(packet.tlv)
 
     # ---------------------------------------------------------- file download
     def _download_file(self, name, file_type, start, end, dict_id=0):

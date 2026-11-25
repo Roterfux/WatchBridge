@@ -13,11 +13,14 @@ Page {
     readonly property var hs: status.health || {}
     readonly property int healthLastSync: hs.lastSync || 0
     property int todaySteps: -1
+    property var today: null    // today's GetHealth result, for the goal rings
 
     function loadTodaySteps() {
         if (!daemon.available) return
         daemon.getHealth(Qt.formatDate(new Date(), "yyyy-MM-dd"), function(r) {
-            page.todaySteps = r.available && (r.minutes > 0 || r.totalsUpdated) ? r.steps : -1
+            var has = r.available && (r.minutes > 0 || r.totalsUpdated)
+            page.todaySteps = has ? r.steps : -1
+            page.today = has ? r : null
         })
     }
     onHealthLastSyncChanged: loadTodaySteps()
@@ -25,6 +28,11 @@ Page {
     Connections {
         target: daemon
         onAvailableChanged: page.loadTodaySteps()
+    }
+    // The face may have been changed on the watch itself; ask again when the app comes forward
+    Connections {
+        target: Qt.application
+        onActiveChanged: if (Qt.application.active && daemon.connected) daemon.refreshWatchfaces()
     }
 
     function ago(ts) {
@@ -74,15 +82,33 @@ Page {
                 description: daemon.stateText(daemon.watchState, status.detail)
             }
 
-            WatchFace {
+            Item {
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: Math.min(page.width, page.height) * 0.55
                 height: width
-                battery: status.battery !== undefined ? status.battery : -1
-                watchState: daemon.watchState
-                busy: daemon.busy
-                opacity: daemon.paired ? 1.0 : 0.4
-                Behavior on opacity { FadeAnimation {} }
+
+                // The face on the watch, if WatchBridge installed it and so has its picture;
+                // otherwise (built-in and store faces, or while loading) the drawn watch
+                readonly property string facePreview: daemon.paired
+                    ? ((status.watchfaces || {}).currentPreview || "") : ""
+
+                RoundImage {
+                    id: currentFace
+                    anchors.fill: parent
+                    anchors.margins: Theme.paddingMedium
+                    source: parent.facePreview ? "file://" + parent.facePreview : ""
+                    opacity: daemon.connected ? 1.0 : 0.5
+                    Behavior on opacity { FadeAnimation {} }
+                }
+                WatchFace {
+                    anchors.fill: parent
+                    visible: !currentFace.ready
+                    battery: status.battery !== undefined ? status.battery : -1
+                    watchState: daemon.watchState
+                    busy: daemon.busy
+                    opacity: daemon.paired ? 1.0 : 0.4
+                    Behavior on opacity { FadeAnimation {} }
+                }
             }
 
             Label {
@@ -126,58 +152,29 @@ Page {
                 }
             }
 
-            // -------------------------------------------------------- watch info
-            SectionHeader { text: qsTr("Watch"); visible: daemon.paired }
-
-            DetailItem {
-                visible: daemon.paired && !!info.model
-                label: qsTr("Model")
-                value: info.model || ""
-            }
-            DetailItem {
-                visible: daemon.paired && !!info.software_version
-                label: qsTr("Firmware")
-                value: info.software_version || ""
-            }
-            DetailItem {
-                visible: daemon.paired
-                label: qsTr("Battery")
-                value: status.battery >= 0 ? status.battery + " %" : qsTr("unknown")
-            }
-            DetailItem {
-                visible: daemon.paired
-                label: qsTr("Bluetooth address")
-                value: status.address || ""
-            }
-
-            ButtonLayout {
-                visible: daemon.paired
-                Button {
-                    text: qsTr("Sync time")
-                    enabled: daemon.connected
-                    onClicked: daemon.syncTime()
-                }
-                Button {
-                    text: daemon.connected ? qsTr("Reconnect") : qsTr("Connect")
-                    enabled: !daemon.busy
-                    onClicked: {
-                        if (daemon.connected) daemon.disconnectWatch()
-                        daemon.connectWatch()
-                    }
-                }
-            }
-
             // ----------------------------------------------------------- health
             SectionHeader { text: qsTr("Health"); visible: daemon.paired }
 
             BackgroundItem {
                 visible: daemon.paired
-                height: healthCol.height + 2 * Theme.paddingMedium
+                height: Math.max(healthCol.height, miniRings.visible ? miniRings.height : 0) + 2 * Theme.paddingMedium
                 onClicked: pageStack.push(Qt.resolvedUrl("HealthPage.qml"), { daemon: daemon })
+                ActivityRings {
+                    id: miniRings
+                    visible: !!page.today
+                    x: Theme.horizontalPageMargin
+                    width: Theme.itemSizeMedium
+                    height: width
+                    anchors.verticalCenter: parent.verticalCenter
+                    thickness: 0.18
+                    gap: 0.06
+                    values: dayValues(page.today, daemon.settings.health && daemon.settings.health.goals)
+                    colors: daemon.ringColors
+                }
                 Column {
                     id: healthCol
-                    x: Theme.horizontalPageMargin
-                    width: parent.width - 2 * x - healthArrow.width
+                    x: miniRings.visible ? miniRings.x + miniRings.width + Theme.paddingLarge : Theme.horizontalPageMargin
+                    width: parent.width - x - Theme.horizontalPageMargin - healthArrow.width
                     anchors.verticalCenter: parent.verticalCenter
                     Label {
                         width: parent.width
@@ -203,61 +200,52 @@ Page {
                 }
             }
 
-            // ------------------------------------------------------ notifications
-            SectionHeader { text: qsTr("Notifications"); visible: daemon.paired }
-
-            TextSwitch {
-                visible: daemon.paired
-                text: qsTr("Forward notifications")
-                readonly property var ns: daemon.settings.notifications || {}
-                description: ns.mode === "selected" && (ns.allowed_apps || []).length === 0
-                             ? qsTr("Only selected apps are forwarded, and none is selected yet. Choose them in Settings.")
-                             : qsTr("%n notification(s) sent this session", "", status.notificationsForwarded || 0)
-                checked: daemon.settings.notifications ? daemon.settings.notifications.enabled : true
-                automaticCheck: false
-                onClicked: daemon.updateSettings({ "notifications": { "enabled": !checked } })
-            }
+            // ------------------------------------------------------ watch faces
+            SectionHeader { text: qsTr("Watch"); visible: daemon.paired }
 
             BackgroundItem {
-                visible: daemon.paired && !!status.lastNotification
-                height: lastCol.height + 2 * Theme.paddingMedium
-                Column {
-                    id: lastCol
+                visible: daemon.paired
+                height: Theme.itemSizeSmall
+                onClicked: pageStack.push(Qt.resolvedUrl("WatchfacesPage.qml"), { daemon: daemon })
+                Label {
                     x: Theme.horizontalPageMargin
-                    width: parent.width - 2 * x
                     anchors.verticalCenter: parent.verticalCenter
-                    Label {
-                        width: parent.width
-                        truncationMode: TruncationMode.Fade
-                        font.pixelSize: Theme.fontSizeExtraSmall
-                        color: Theme.secondaryColor
-                        text: status.lastNotification
-                              ? qsTr("Last: %1 · %2").arg(status.lastNotification.app).arg(ago(status.lastNotification.time))
-                              : ""
-                    }
-                    Label {
-                        width: parent.width
-                        truncationMode: TruncationMode.Fade
-                        text: status.lastNotification ? status.lastNotification.title : ""
-                    }
-                    Label {
-                        width: parent.width
-                        maximumLineCount: 2
-                        wrapMode: Text.Wrap
-                        elide: Text.ElideRight
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.secondaryColor
-                        text: status.lastNotification ? status.lastNotification.body : ""
-                    }
+                    width: parent.width - 2 * x - facesArrow.width
+                    truncationMode: TruncationMode.Fade
+                    readonly property var up: (status.watchfaces || {}).upload || {}
+                    text: up.state === "uploading" ? qsTr("Watch faces · sending %1 %").arg(up.progress || 0)
+                                                   : qsTr("Watch faces")
+                }
+                Icon {
+                    id: facesArrow
+                    anchors { right: parent.right; rightMargin: Theme.horizontalPageMargin; verticalCenter: parent.verticalCenter }
+                    source: "image://theme/icon-m-right"
                 }
             }
 
-            Button {
-                visible: daemon.paired
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: qsTr("Send test notification")
-                enabled: daemon.connected
-                onClicked: daemon.sendTestNotification()
+            BackgroundItem {
+                // Children of a BackgroundItem live in its contentItem, so they refer to it by id
+                id: alarmsRow
+                readonly property var al: status.alarms || {}
+                readonly property var active: (al.list || []).filter(function(a) { return a.enabled })
+                visible: daemon.paired && (!!al.supported || al.list !== null && al.list !== undefined)
+                height: Theme.itemSizeSmall
+                onClicked: pageStack.push(Qt.resolvedUrl("AlarmsPage.qml"), { daemon: daemon })
+                Label {
+                    x: Theme.horizontalPageMargin
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - 2 * x - alarmsArrow.width
+                    truncationMode: TruncationMode.Fade
+                    text: alarmsRow.active.length === 0 ? qsTr("Alarms")
+                          : qsTr("Alarms · %1").arg(alarmsRow.active.map(function(a) {
+                                return (a.hour < 10 ? "0" : "") + a.hour + ":" + (a.minute < 10 ? "0" : "") + a.minute
+                            }).join(", "))
+                }
+                Icon {
+                    id: alarmsArrow
+                    anchors { right: parent.right; rightMargin: Theme.horizontalPageMargin; verticalCenter: parent.verticalCenter }
+                    source: "image://theme/icon-m-right"
+                }
             }
 
             // ------------------------------------------------------------ weather
@@ -358,6 +346,38 @@ Page {
                     enabled: daemon.connected
                     onClicked: daemon.refreshWeather()
                 }
+            }
+
+            // ------------------------------------------------- watch details
+            SectionHeader { text: qsTr("Watch details"); visible: daemon.paired }
+
+            DetailItem {
+                visible: daemon.paired && !!info.model
+                label: qsTr("Model")
+                value: info.model || ""
+            }
+            DetailItem {
+                visible: daemon.paired && !!info.software_version
+                label: qsTr("Firmware")
+                // "6.0.0.23(SP10C00M06)" -> "6.0.0.23"
+                value: (info.software_version || "").replace(/\s*\(.*\)\s*$/, "")
+            }
+            BackgroundItem {
+                visible: daemon.paired
+                height: batteryItem.height
+                onClicked: pageStack.push(Qt.resolvedUrl("BatteryPage.qml"), { daemon: daemon })
+                DetailItem {
+                    id: batteryItem
+                    label: qsTr("Battery")
+                    value: status.battery >= 0 ? (status.batteryCharging ? qsTr("%1 % · charging").arg(status.battery)
+                                                                         : qsTr("%1 % · history").arg(status.battery))
+                                               : qsTr("unknown")
+                }
+            }
+            DetailItem {
+                visible: daemon.paired
+                label: qsTr("Bluetooth address")
+                value: status.address || ""
             }
         }
 

@@ -79,6 +79,10 @@ class FakeWatch:
         self.calendar_commands = []                 # bytes the phone sent to the app
         self.calendar_answers = []                  # P2P acks from the phone
         self.calendar_info = None                   # TLV of the last calendar file info
+        # Event alarms (service 0x08): TLVs as the watch stores them, and every list the phone sent
+        self.alarms = [TLV().put_byte(0x03, 1).put(0x04, True).put_short(0x05, (6 << 8) | 30)
+                       .put_byte(0x06, 0x1F).put(0x07, "Work")]
+        self.alarm_sets = []
         self.thread = threading.Thread(target=self._loop, daemon=True)
 
     def start(self):
@@ -178,6 +182,19 @@ class FakeWatch:
                                                             b"hichain_return_key", 32)
             return None
         return self._hichain_reply({"errorCode": 2})
+
+    def _alarms(self, c, t):
+        """Alarms (0x08): the list (0x03) and replacing it (0x01), like the GT 5 (no smart alarm)."""
+        if c == 0x03:
+            inner = TLV()
+            for alarm in self.alarms:
+                inner.put(0x82, alarm)
+            return self._send(0x08, 0x03, TLV().put(0x81, inner), True)
+        if c == 0x01:
+            self.alarm_sets.append(t)
+            # The "all off" marker carries only an index
+            self.alarms = [a for a in t.get_object(0x81).get_objects(0x82) if a.contains(0x04)]
+        return self._send(0x08, c, OK, True)
 
     def _fitness(self, c, t):
         """FitnessData (0x07) with the records in self.health."""
@@ -385,6 +402,8 @@ class FakeWatch:
             return self._p2p(t)
         if s == 0x07:
             return self._fitness(c, t)
+        if s == 0x08:
+            return self._alarms(c, t)
         if s == 0x2C:
             return self._files(c, t)
         if s == 0x27:
@@ -402,7 +421,7 @@ class FakeWatch:
             return self._send(s, c, TLV().put_byte(0x01, 87), True)
         if (s, c) == (0x01, 0x02):
             from watchbridge.huawei.commands import KNOWN_SUPPORTED_SERVICES
-            bitmap = bytes(1 if x in (0x02, 0x07, 0x0B, 0x0C, 0x0F, 0x20, 0x27, 0x34) else 0
+            bitmap = bytes(1 if x in (0x02, 0x07, 0x08, 0x0B, 0x0C, 0x0F, 0x20, 0x27, 0x34) else 0
                            for x in KNOWN_SUPPORTED_SERVICES)
             return self._send(s, c, TLV().put(0x02, bitmap), True)
         if (s, c) == (0x01, 0x03):
