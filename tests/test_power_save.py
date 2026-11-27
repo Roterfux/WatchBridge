@@ -184,6 +184,27 @@ class TestFaceTimer(unittest.TestCase):
         self.assertIsNone(s._face_timer)
 
 
+class TestSpotChecks(unittest.TestCase):
+    def test_timed_checks(self):
+        s = service()
+        s.watch.spots = []
+        s.watch.spot_check = lambda kind, on: s.watch.spots.append((kind, on))
+        s.config.data["health"].update(heart_rate_every=15, spo2_every=120)
+        for minute in range(0, 33):
+            s._spot_tick(now=minute * 60)
+        hr = [(m, on) for m, (k, on) in enumerate(s.watch.spots) if k == "heart_rate"]
+        self.assertEqual([on for _, on in hr], [True, False, True, False, True, False])
+        self.assertEqual([on for k, on in s.watch.spots if k == "spo2"], [True, False])
+
+    def test_paused_while_saving(self):
+        s = service(Phone(power_save=True))
+        s.watch.spots = []
+        s.watch.spot_check = lambda kind, on: s.watch.spots.append((kind, on))
+        s.config.data["health"]["heart_rate_every"] = 15
+        s._spot_tick(now=0)
+        self.assertEqual(s.watch.spots, [])
+
+
 class TestHeartRateMode(unittest.TestCase):
     def sent(self, enabled, mode):
         phone, watch_sock = socket.socketpair()

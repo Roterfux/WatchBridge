@@ -541,6 +541,35 @@ class HuaweiWatch:
         self._confirm("Continuous heart rate %s%s" % ("on" if enabled else "off", " (smart)" if mode == "smart" else ""),
                       F.automatic_heart_rate(enabled))
 
+    def spot_check(self, kind, on):
+        """Phone-timed measurement: "heart_rate" or "spo2" switched on, or back to the configured setting."""
+        self.submit(lambda: self._spot_check(kind, on))
+
+    def _spot_check(self, kind, on):
+        if kind == "spo2":
+            if not self.supports(F.SERVICE, F.AUTOMATIC_SPO2):
+                return
+            self._send(F.automatic_spo2(bool(on or self.settings.get("automatic_spo2"))))
+            log.info("SpO2 check %s", "start" if on else "end")
+            return
+        realtime_ok = self.supports(F.SERVICE, F.REALTIME_HEART_RATE)
+        if on:
+            log.info("Heart rate check start")
+            if realtime_ok:
+                self._confirm("Real-time heart rate on", F.realtime_heart_rate(True))
+            else:
+                self._set_automatic_heart_rate(True)
+            return
+        log.info("Heart rate check end")
+        enabled, mode = self.settings.get("continuous_heart_rate"), self.settings.get("heart_rate_mode")
+        if enabled is None:
+            if realtime_ok:
+                self._confirm("Real-time heart rate off", F.realtime_heart_rate(False))
+            else:
+                self._set_automatic_heart_rate(False)
+        else:
+            self._set_automatic_heart_rate(bool(enabled), mode or ("smart" if realtime_ok else None))
+
     # ---------------------------------------------------- alarms and settings
     @property
     def alarms_supported(self):

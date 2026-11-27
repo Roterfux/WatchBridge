@@ -77,6 +77,8 @@ DEFAULTS = {
         # With continuous heart rate on: "smart" (less often at rest, about every 10 min) or "realtime"
         # (about every second); None = only switch it on or off, as before
         "heart_rate_mode": None,
+        "heart_rate_every": 0,          # minutes between phone-triggered heart-rate checks, 0 = off
+        "spo2_every": 0,                # minutes between phone-triggered SpO2 checks, 0 = off
         "automatic_spo2": None,         # blood oxygen through the day; None = leave it to the watch
         "low_spo2_alert": 0,            # the watch warns below this %, 0 = off
         "folder": "",            # empty = ~/Documents/WatchBridge

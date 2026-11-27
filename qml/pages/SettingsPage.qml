@@ -20,6 +20,8 @@ Page {
     readonly property var spo2Alerts: [0, 80, 85, 90]
     readonly property var moveIntervals: [30, 45, 60, 90, 120, 180]
     readonly property var hrModes: [null, "smart", "realtime"]
+    readonly property var hrEvery: [0, 5, 10, 15, 20, 30, 45, 60]
+    readonly property var spo2Every: [0, 60, 120, 180, 240]
     readonly property var saveModes: ["phone", "always", "off"]
     readonly property var dnd: s.do_not_disturb || {}
     readonly property var phone: daemon.status.phone || {}
@@ -381,6 +383,40 @@ Page {
                     var v = page.hrModes[currentIndex]
                     if (v !== (hl.heart_rate_mode || null))
                         daemon.updateSettings({ "health": { "heart_rate_mode": v } })
+                }
+            }
+            ComboBox {
+                label: qsTr("Extra heart rate check")
+                description: qsTr("Test: switches real-time measuring on for 2 min at this interval. Paused while saving power.")
+                currentIndex: Math.max(0, page.hrEvery.indexOf(hl.heart_rate_every || 0))
+                menu: ContextMenu {
+                    Repeater {
+                        model: page.hrEvery
+                        MenuItem { text: modelData === 0 ? qsTr("Off") : qsTr("Every %1 min").arg(modelData) }
+                    }
+                }
+                onCurrentIndexChanged: {
+                    if (!page.s.health) return
+                    var v = page.hrEvery[currentIndex]
+                    if (v !== (hl.heart_rate_every || 0))
+                        daemon.updateSettings({ "health": { "heart_rate_every": v } })
+                }
+            }
+            ComboBox {
+                label: qsTr("Extra blood oxygen check")
+                description: qsTr("Test: switches automatic SpO₂ on for 10 min at this interval. Paused while saving power.")
+                currentIndex: Math.max(0, page.spo2Every.indexOf(hl.spo2_every || 0))
+                menu: ContextMenu {
+                    Repeater {
+                        model: page.spo2Every
+                        MenuItem { text: modelData === 0 ? qsTr("Off") : qsTr("Every %1 h").arg(modelData / 60) }
+                    }
+                }
+                onCurrentIndexChanged: {
+                    if (!page.s.health) return
+                    var v = page.spo2Every[currentIndex]
+                    if (v !== (hl.spo2_every || 0))
+                        daemon.updateSettings({ "health": { "spo2_every": v } })
                 }
             }
             TextSwitch {

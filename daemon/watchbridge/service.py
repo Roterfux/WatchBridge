@@ -72,6 +72,9 @@ SAVING_BATTERY_POLL = 60 * 60
 SAVING_WEATHER_MINUTES = 3 * 60
 SAVING_CALENDAR = 2 * 3600
 SAVING_RECONNECT = 30 * 60        # replaces the 10-minute retries once the quick ones are used up
+SPOT_TICK = 60                    # phone-timed heart-rate / SpO2 checks are looked at once a minute
+SPOT_HR_WINDOW = 2 * 60           # real-time heart rate stays on this long per check
+SPOT_SPO2_WINDOW = 10 * 60        # automatic SpO2 stays on this long per check
 
 
 class ReconnectBackoff:
@@ -180,6 +183,8 @@ class Service(dbus.service.Object):
     _battery_polled = 0.0               # monotonic time of the last battery poll
     _calendar_polled = 0.0              # monotonic time of the last timed calendar check
     _face_timer = None
+    _spot_next = None           # per instance, made in _spot_tick
+    _spot_end = None
     held_notifications = 0              # not sent to the watch because of do not disturb
 
     def __init__(self, session_bus, system_bus, config=None):
@@ -255,6 +260,7 @@ class Service(dbus.service.Object):
         self._phone.start()
         GLib.timeout_add_seconds(CALENDAR_REFRESH, lambda: (self._timed_calendar_sync(), True)[1])
         GLib.timeout_add_seconds(BATTERY_POLL, lambda: (self._poll_battery(), True)[1])
+        GLib.timeout_add_seconds(SPOT_TICK, lambda: (self._spot_tick(), True)[1])
         self._arm_face_timer()
         GLib.timeout_add_seconds(RECONNECT_WATCHDOG, lambda: (self._reconnect_watchdog(), True)[1])
         # Not at once: the first run may show Sailfish's permission prompt
@@ -816,6 +822,30 @@ class Service(dbus.service.Object):
         if self._ready() and not self.watch.uploading:
             self._battery_polled = now
             self.watch.read_battery()
+
+    def _spot_tick(self, now=None):
+        """Phone-timed heart-rate and SpO2 checks: switch measuring on for a while, then back."""
+        now = time.monotonic() if now is None else now
+        if "_spot_next" not in self.__dict__:
+            self._spot_next, self._spot_end = {}, {}
+        health = self.config.data["health"]
+        for kind, every_key, window in (("heart_rate", "heart_rate_every", SPOT_HR_WINDOW),
+                                        ("spo2", "spo2_every", SPOT_SPO2_WINDOW)):
+            end = self._spot_end.get(kind)
+            if end is not None and now >= end:
+                self._spot_end.pop(kind)
+                if self._ready():
+                    self.watch.spot_check(kind, False)
+            every = int(health.get(every_key) or 0)
+            if every <= 0:
+                self._spot_next.pop(kind, None)
+                continue
+            if kind in self._spot_end or self._saving() or not self._ready() or self.watch.uploading:
+                continue
+            if now >= self._spot_next.get(kind, 0):
+                self._spot_next[kind] = now + every * 60
+                self._spot_end[kind] = now + window
+                self.watch.spot_check(kind, True)
 
     # ============================================================ phone state
     def _saving(self):

@@ -3,7 +3,7 @@
 Name:       harbour-watchbridge
 Summary:    Huawei Watch GT 5 companion: pairing, notifications and weather
 Version:    0.9.0
-Release:    4
+Release:    5
 License:    AGPLv3+
 BuildArch:  noarch
 Source0:    %{name}-%{version}.tar.bz2
@@ -101,6 +101,9 @@ systemctl-user daemon-reload >/dev/null 2>&1 || :
 %{_userunitdir}/post-user-session.target.wants/harbour-watchbridge.service
 
 %changelog
+* Fri Nov 27 2026 WatchBridge contributors - 0.9.0-5
+- Test: phone-timed heart-rate (real-time for 2 min) and SpO2 (automatic for 10 min) checks at a set interval
+
 * Wed Nov 25 2026 WatchBridge contributors - 0.9.0-4
 - Power saving: with the phone's battery saver (or always) health sync at most every 12 h,
   watch battery hourly, weather every 3 h, calendar every 2 h, lost watch every 30 min.
